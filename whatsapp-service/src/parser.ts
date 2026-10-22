@@ -121,6 +121,7 @@ function isSummary(text: string): boolean {
     lower === "summary" ||
     /^(?:show|give|send|display) (?:me )?(?:my )?(?:spending )?summary\??$/.test(lower) ||
     /\b(?:what did i spend|how much did i spend|how much have i spent|what have i spent)\b/.test(lower) ||
+    /\b(?:overall totals?|total spending|what have you saved|how much have i received)\b/.test(lower) ||
     /\b(?:summarise|summarize|summary)\b/.test(lower) ||
     /\b(?:spending|transactions) (?:for |in )?this month\b/.test(lower)
   );

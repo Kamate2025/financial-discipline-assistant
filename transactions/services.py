@@ -21,11 +21,19 @@ class FinancialSummary:
         self.refund_total = Decimal("0.00")
         self.loan_received_total = Decimal("0.00")
         self.loan_repayment_total = Decimal("0.00")
+        self.loan_given_total = Decimal("0.00")
+        self.loan_repayment_received_total = Decimal("0.00")
+        self.gift_received_total = Decimal("0.00")
+        self.asset_sale_total = Decimal("0.00")
         self.income_count = 0
         self.expense_count = 0
         self.refund_count = 0
         self.loan_received_count = 0
         self.loan_repayment_count = 0
+        self.loan_given_count = 0
+        self.loan_repayment_received_count = 0
+        self.gift_received_count = 0
+        self.asset_sale_count = 0
         self.transfer_count = 0
 
     @property
@@ -35,7 +43,11 @@ class FinancialSummary:
             - self.expense_total
             + self.refund_total
             + self.loan_received_total
+            + self.loan_repayment_received_total
+            + self.gift_received_total
+            + self.asset_sale_total
             - self.loan_repayment_total
+            - self.loan_given_total
         )
 
 
@@ -83,6 +95,18 @@ def calculate_user_summary(user, start_date, end_date):
         elif txn.activity_type == Transaction.ActivityType.LOAN_REPAYMENT:
             summary.loan_repayment_total += txn.amount
             summary.loan_repayment_count += 1
+        elif txn.activity_type == Transaction.ActivityType.LOAN_GIVEN:
+            summary.loan_given_total += txn.amount
+            summary.loan_given_count += 1
+        elif txn.activity_type == Transaction.ActivityType.LOAN_REPAYMENT_RECEIVED:
+            summary.loan_repayment_received_total += txn.amount
+            summary.loan_repayment_received_count += 1
+        elif txn.activity_type == Transaction.ActivityType.GIFT_RECEIVED:
+            summary.gift_received_total += txn.amount
+            summary.gift_received_count += 1
+        elif txn.activity_type == Transaction.ActivityType.ASSET_SALE:
+            summary.asset_sale_total += txn.amount
+            summary.asset_sale_count += 1
         elif txn.activity_type == Transaction.ActivityType.TRANSFER:
             summary.transfer_count += 1
 
@@ -120,11 +144,15 @@ def calculate_financial_insights(user, start_date, end_date, compare_start=None,
             row = data.setdefault(tx.currency, {
                 "currency": tx.currency, "income_total": Decimal("0.00"), "expense_total": Decimal("0.00"),
                 "refund_total": Decimal("0.00"), "loan_received_total": Decimal("0.00"),
-                "loan_repayment_total": Decimal("0.00"), "income_count": 0, "expense_count": 0,
+                "loan_repayment_total": Decimal("0.00"), "loan_given_total": Decimal("0.00"),
+                "loan_repayment_received_total": Decimal("0.00"), "gift_received_total": Decimal("0.00"),
+                "asset_sale_total": Decimal("0.00"), "income_count": 0, "expense_count": 0,
                 "refund_count": 0, "loan_received_count": 0, "loan_repayment_count": 0,
+                "loan_given_count": 0, "loan_repayment_received_count": 0,
+                "gift_received_count": 0, "asset_sale_count": 0,
             })
             kind = tx.activity_type.lower()
-            if kind in {"income", "expense", "refund", "loan_received", "loan_repayment"}:
+            if kind in {"income", "expense", "refund", "loan_received", "loan_repayment", "loan_given", "loan_repayment_received", "gift_received", "asset_sale"}:
                 field = f"{kind}_total"
                 row[field] += tx.amount
                 row[f"{kind}_count"] += 1
@@ -132,7 +160,10 @@ def calculate_financial_insights(user, start_date, end_date, compare_start=None,
                 categories[tx.currency][tx.category or "UNCATEGORIZED"] += tx.amount
                 daily[tx.currency][tx.activity_date.isoformat()] += tx.amount
         for row in data.values():
-            row["net_cash_flow"] = row["income_total"] - row["expense_total"] + row["refund_total"] + row["loan_received_total"] - row["loan_repayment_total"]
+            row["net_cash_flow"] = (row["income_total"] - row["expense_total"] + row["refund_total"]
+                                    + row["loan_received_total"] + row["loan_repayment_received_total"]
+                                    + row["gift_received_total"] + row["asset_sale_total"]
+                                    - row["loan_repayment_total"] - row["loan_given_total"])
             row["category_breakdown"] = [
                 {"category": name, "expense_total": amount}
                 for name, amount in sorted(categories[row["currency"]].items(), key=lambda item: (-item[1], item[0]))

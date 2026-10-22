@@ -21,6 +21,10 @@ class Transaction(models.Model):
         REFUND = "REFUND", "Refund"
         LOAN_RECEIVED = "LOAN_RECEIVED", "Loan received"
         LOAN_REPAYMENT = "LOAN_REPAYMENT", "Loan repayment"
+        LOAN_GIVEN = "LOAN_GIVEN", "Loan given"
+        LOAN_REPAYMENT_RECEIVED = "LOAN_REPAYMENT_RECEIVED", "Loan repayment received"
+        GIFT_RECEIVED = "GIFT_RECEIVED", "Gift received"
+        ASSET_SALE = "ASSET_SALE", "Personal asset sale"
         # Retained so existing records and clients remain compatible.
         TRANSFER = "TRANSFER", "Transfer"
 
@@ -38,7 +42,7 @@ class Transaction(models.Model):
         OTHER = "OTHER", "Other"
 
     description = models.CharField(max_length=500)
-    activity_type = models.CharField(max_length=20, choices=ActivityType.choices)
+    activity_type = models.CharField(max_length=30, choices=ActivityType.choices)
     category = models.CharField(max_length=20, choices=Category.choices, blank=True, default="")
     amount = models.DecimalField(
         max_digits=12,

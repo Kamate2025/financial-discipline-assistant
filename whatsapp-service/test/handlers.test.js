@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  api, dispatchMessage, onboardingState, registeredPhones, processedMessages,
+  api, dispatchMessage, onboardingState, registeredPhones, profileStatusCache, processedMessages,
 } = require('../dist/handlers.js');
 const gemini = require('../dist/gemini.js');
 
@@ -38,6 +38,7 @@ test.beforeEach(() => {
   api.saveWhatsAppCountry = async () => ({ created: false });
   onboardingState.clear();
   registeredPhones.clear();
+  profileStatusCache.clear();
   processedMessages.clear();
 });
 
@@ -46,6 +47,7 @@ test.afterEach(() => {
   for (const [key, value] of Object.entries(original)) api[key] = value;
   onboardingState.clear();
   registeredPhones.clear();
+  profileStatusCache.clear();
   processedMessages.clear();
 });
 
@@ -245,6 +247,34 @@ test('show my summary takes the deterministic Django command path', async () => 
   assert.match(replies[0], /\*FD \| Summary\*/);
   assert.match(replies[0], /October|2026/);
   assert.doesNotMatch(replies[0], /Loans received: UGX 0|Income: UGX 0|Expenses: UGX 0/);
+});
+
+test('a summary request is handled while an unrelated transaction clarification remains pending', async () => {
+  registeredPhones.add(phone);
+  const pending = { action_type: 'TRANSACTION', payload: { amount: '30000', description: 'dinner', activity_type: 'EXPENSE' }, original_message_id: 'pending-meal' };
+  api.getPendingAction = async () => pending;
+  let cleared = false;
+  api.clearPendingAction = async () => { cleared = true; };
+  let query;
+  api.getFinancialInsights = async (_phone, params) => { query = params; return { transaction_count: 0, currencies: [], comparisons: [], matching_transactions: [], largest_expenses: [] }; };
+  const replies = [];
+  await dispatchMessage(from, 'show my summary', 'summary-while-pending', async (_to, text) => replies.push(text));
+  assert.ok(query);
+  assert.equal(cleared, false);
+  assert.match(replies[0], /FD \| Summary/);
+});
+
+test('repeat summary requests reuse profile status and skip pending-action reads', async () => {
+  registeredPhones.add(phone);
+  let profileReads = 0;
+  let pendingReads = 0;
+  api.getOnboardingStatus = async () => { profileReads += 1; return { registered: true, preferred_name: 'Kamate', needs_name: false, needs_country: false, currency_code: 'UGX' }; };
+  api.getPendingAction = async () => { pendingReads += 1; return null; };
+  const send = async () => {};
+  await dispatchMessage(from, 'show my summary', 'fast-summary-1', send);
+  await dispatchMessage(from, 'show my summary', 'fast-summary-2', send);
+  assert.equal(profileReads, 1);
+  assert.equal(pendingReads, 0);
 });
 
 test('profile-name questions return the saved name without invoking Gemini', async () => {

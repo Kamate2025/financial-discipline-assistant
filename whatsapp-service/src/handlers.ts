@@ -1,5 +1,5 @@
 import { parseMessage, ParsedMessage } from "./parser";
-import { DjangoApiClient, isUnknownWhatsAppPhoneResponse } from "./api";
+import { DjangoApiClient, isUnknownWhatsAppPhoneResponse, OnboardingStatus } from "./api";
 import { loadServiceConfig } from "./config";
 import { GeminiError, Interpretation, interpretMessage } from "./gemini";
 
@@ -8,7 +8,18 @@ const { backendBaseUrl: BASE_URL, serviceKey: SERVICE_KEY } = loadServiceConfig(
 const onboardingState = new Set<string>();
 const processedMessages = new Set<string>();
 const registeredPhones = new Set<string>();
+const profileStatusCache = new Map<string, { expiresAt: number; profile: OnboardingStatus }>();
+const PROFILE_STATUS_CACHE_MS = 60_000;
 const api = new DjangoApiClient(BASE_URL, SERVICE_KEY);
+
+async function getOnboardingStatus(phoneNumber: string): Promise<OnboardingStatus> {
+  const cached = profileStatusCache.get(phoneNumber);
+  if (cached && cached.expiresAt > Date.now()) return cached.profile;
+  profileStatusCache.delete(phoneNumber);
+  const profile = await api.getOnboardingStatus(phoneNumber);
+  profileStatusCache.set(phoneNumber, { profile, expiresAt: Date.now() + PROFILE_STATUS_CACHE_MS });
+  return profile;
+}
 
 function formatAmount(amount: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -50,7 +61,7 @@ function isUnknownPhone(error: any): boolean {
   return isUnknownWhatsAppPhoneResponse(apiStatus(error), error?.response?.data?.detail);
 }
 
-export { onboardingState, processedMessages, registeredPhones, api, formatCurrency };
+export { onboardingState, processedMessages, registeredPhones, profileStatusCache, api, formatCurrency };
 
 async function sendMenu(phone: string, send: (to: string, text: string) => Promise<void>): Promise<void> {
   await send(phone, "FD menu (text options):\n1. Today's summary — ‘summary today’\n2. This month's summary — ‘summary this month’\n3. Record a transaction — ‘I spent 15k on lunch’\n4. Spending insights — ‘where does most of my money go?’\n5. Help — ‘help me use FD’\n\nYou can also ask in your own words. Reply with a request; these are not clickable buttons.");
@@ -78,7 +89,7 @@ export async function handleOnboarding(
 ): Promise<void> {
   try {
     console.info("[FD] Onboarding profile lookup started.");
-    const profile = await api.getOnboardingStatus(phoneNumber);
+    const profile = await getOnboardingStatus(phoneNumber);
     if (profile.registered && profile.needs_name) {
       registeredPhones.add(phoneNumber);
       onboardingState.add(phoneNumber);
@@ -118,10 +129,11 @@ export async function handleNameUpdate(
 ): Promise<void> {
   try {
     await api.saveWhatsAppProfile(phoneNumber, name);
+    profileStatusCache.delete(phoneNumber);
     console.info("[FD] Onboarding profile saved successfully.");
     onboardingState.delete(phoneNumber);
     registeredPhones.add(phoneNumber);
-    const profile = await api.getOnboardingStatus(phoneNumber);
+    const profile = await getOnboardingStatus(phoneNumber);
     if (profile.needs_country) {
       await sendMessage(phoneNumber, `Nice to meet you, ${name}!`);
       await promptCountry(phoneNumber, sendMessage);
@@ -166,6 +178,7 @@ async function handleCountrySelection(
       return;
     }
     await api.saveWhatsAppCountry(phoneNumber, selected.country_code);
+    profileStatusCache.delete(phoneNumber);
     registeredPhones.add(phoneNumber);
     await sendMessage(phoneNumber, `You're all set with ${selected.currency_code}! Record your first transaction, for example: ‘I spent 15,000 ${selected.currency_code} on lunch today.’ Say ‘show my menu’ to see your options.`);
   } catch (error: any) {
@@ -236,6 +249,7 @@ export async function handleSummary(
     intent: "SUMMARY", statementStatus: "QUESTION", confidence: "HIGH", transactionType: "", amount: "", previousAmount: "",
     currency: "", description: "", category: "", transactionDate: "", period: "CUSTOM", startDate, endDate,
     compareStartDate: "", compareEndDate: "", name: "", searchQuery: "", fieldsToChange: [], missingInformation: "NONE",
+    transactions: [],
   }, sendMessage, timeZone);
 }
 
@@ -257,6 +271,7 @@ export async function dispatchMessage(
   trace(messageId, "Sender identity normalized");
   let preferredCurrency = "UGX";
   let timeZone = "Africa/Kampala";
+  let preferredName = "";
   let deterministic: ParsedMessage = parseMessage(text, preferredCurrency, timeZone);
 
   if (/^(hello|hi|hey)(\s+fd)?[!. ]*$/.test(lower) && !registeredPhones.has(phoneNumber)) {
@@ -306,15 +321,18 @@ export async function dispatchMessage(
   }
   if (registeredPhones.has(phoneNumber)) {
     try {
-      const profile = await api.getOnboardingStatus(phoneNumber);
+      const profile = await getOnboardingStatus(phoneNumber);
       if (profile.registered && profile.needs_name) {
         onboardingState.add(phoneNumber);
         await sendMessage(phoneNumber, "What name should I use for you?");
         return;
       }
       if (profile.registered && profile.needs_country) {
-        await handleCountrySelection(phoneNumber, text, sendMessage);
-        return;
+        const asksBeforeCountry = /\b(?:summary|spending|income|expense|help|menu|options|privacy|who am i|my name|what can you do|support|delete my account|hello|hi|hey)\b/.test(lower);
+        if (!asksBeforeCountry) {
+          await handleCountrySelection(phoneNumber, text, sendMessage);
+          return;
+        }
       }
       if (!profile.registered) {
         registeredPhones.delete(phoneNumber);
@@ -328,6 +346,7 @@ export async function dispatchMessage(
       }
       preferredCurrency = profile.currency_code || "UGX";
       timeZone = profile.time_zone || "Africa/Kampala";
+      preferredName = profile.preferred_name || "";
       deterministic = parseMessage(text, preferredCurrency, timeZone);
     } catch (error: any) {
       trace(messageId, "Onboarding status lookup failed", `HTTP ${apiStatus(error) || "network"}`);
@@ -343,16 +362,24 @@ export async function dispatchMessage(
     await handleNameUpdate(phoneNumber, deterministic.name, sendMessage);
     return;
   }
-  let pending;
-  try {
-    pending = await api.getPendingAction(phoneNumber);
-  } catch (error: any) {
-    trace(messageId, "Pending action lookup failed", `HTTP ${apiStatus(error) || "network"}`);
-    await sendMessage(phoneNumber, "Sorry, I couldn't continue safely just now. Please try again shortly.");
+  if (/\b(?:who (?:built|made|created) you|who is fd|what is fd|what does fd do)\b/.test(lower)) {
+    await sendMessage(phoneNumber, "FD is a personal finance assistant built by Kamate Group Ltd. It helps you record financial activity and review summaries from your saved records.");
     return;
   }
-  if (pending) {
-    await handlePendingAction(phoneNumber, pending, text, messageId, sendMessage, preferredCurrency, timeZone);
+  if (/^(?:delete|erase|remove) my (?:fd )?(?:account|data)$/.test(lower)) {
+    let priorPending: any = null;
+    try {
+      priorPending = await api.getPendingAction(phoneNumber);
+    } catch (error: any) {
+      trace(messageId, "Pending action lookup failed", `HTTP ${apiStatus(error) || "network"}`);
+      await sendMessage(phoneNumber, "Sorry, I couldn't continue safely just now. Please try again shortly.");
+      return;
+    }
+    if (priorPending?.action_type === "ACCOUNT_DELETE_CONFIRM") {
+      await handlePendingAction(phoneNumber, priorPending, text, messageId, sendMessage, preferredCurrency, timeZone);
+    } else {
+      await saveAndAsk(phoneNumber, "ACCOUNT_DELETE_CONFIRM", {}, messageId, "This permanently deletes your FD account, profile, and saved financial records. Reply ‘delete my account’ to confirm, or ‘cancel’ to keep your data.", sendMessage);
+    }
     return;
   }
   if (/^(show( me)? (my )?(menu|options)|menu|options|what can you do( for me)?\??|what do you do\??)$/.test(lower)) {
@@ -399,12 +426,50 @@ export async function dispatchMessage(
     return;
   }
 
+  let pending: any = null;
+  try {
+    pending = await api.getPendingAction(phoneNumber);
+  } catch (error: any) {
+    trace(messageId, "Pending action lookup failed", `HTTP ${apiStatus(error) || "network"}`);
+    await sendMessage(phoneNumber, "Sorry, I couldn't continue safely just now. Please try again shortly.");
+    return;
+  }
+
+  if (pending?.action_type === "ACCOUNT_DELETE_CONFIRM" && /^(?:delete|erase|remove) my (?:fd )?(?:account|data)$/.test(lower)) {
+    await handlePendingAction(phoneNumber, pending, text, messageId, sendMessage, preferredCurrency, timeZone);
+    return;
+  }
+  if (pending?.action_type === "TRANSACTION" && Array.isArray(pending.payload?.multiEvents) && /^(?:retry|try again|finish)$/.test(lower)) {
+    await recordMultipleTransactions(phoneNumber, pending.payload.multiEvents, pending.payload.sourceMessageId || pending.original_message_id || messageId, sendMessage, preferredCurrency, timeZone, pending, messageId);
+    return;
+  }
+  if (pending?.action_type === "CORRECTION_SELECT" && /^\d+$/.test(lower)) {
+    await handlePendingAction(phoneNumber, pending, text, messageId, sendMessage, preferredCurrency, timeZone);
+    return;
+  }
+  if (pending && ["cancel", "never mind", "nevermind", "nope"].includes(lower)) {
+    await api.clearPendingAction(phoneNumber);
+    await sendMessage(phoneNumber, "Cancelled. Nothing was changed.");
+    return;
+  }
+  if (pending && /^(?:yes|confirm|confirmed|yep|no)$/.test(lower)
+    && ["DELETE_CONFIRM", "UNDO_CONFIRM", "ACCOUNT_DELETE_CONFIRM", "CORRECTION"].includes(pending.action_type)) {
+    await handlePendingAction(phoneNumber, pending, text, messageId, sendMessage, preferredCurrency, timeZone);
+    return;
+  }
+
   let interpretation: Interpretation;
   try {
     trace(messageId, "Gemini request started");
+    const recentTransactions = /\b(?:she|he|they|that|it|loan|lent|borrow|paid back|repay|correct|change it)\b/i.test(text)
+      ? (await api.getTransactions(phoneNumber, "", true)).slice(0, 5).map(({ activity_type, amount, currency, description, activity_date }) => ({ activity_type, amount, currency, description, activity_date }))
+      : [];
     interpretation = await interpretMessage(text, {
       preferredCurrency,
       timeZone,
+      profileName: preferredName,
+      pendingContext: pending ? { action_type: pending.action_type, payload: pending.payload } : undefined,
+      recentTransactions,
     });
     trace(messageId, "Gemini interpretation validated", interpretation.intent);
   } catch (error) {
@@ -434,7 +499,56 @@ export async function dispatchMessage(
     }
     return;
   }
+  if (pending && pending.action_type === "TRANSACTION"
+    && ["RECORD_EXPENSE", "RECORD_INCOME", "RECORD_REFUND", "RECORD_LOAN_RECEIVED", "RECORD_LOAN_REPAYMENT", "RECORD_LOAN_GIVEN", "RECORD_LOAN_REPAYMENT_RECEIVED", "RECORD_GIFT_RECEIVED", "RECORD_ASSET_SALE", "MULTI_TRANSACTION", "CLARIFICATION"].includes(interpretation.intent)) {
+    await continuePendingTransaction(phoneNumber, pending, interpretation, messageId, sendMessage, preferredCurrency, timeZone);
+    return;
+  }
+  if (pending && ["CORRECTION", "CORRECTION_SELECT"].includes(pending.action_type)
+    && ["CLARIFICATION", "CORRECT_TRANSACTION", "DELETE_TRANSACTION"].includes(interpretation.intent)) {
+    await handlePendingAction(phoneNumber, pending, text, messageId, sendMessage, preferredCurrency, timeZone);
+    return;
+  }
   await routeInterpretation(phoneNumber, interpretation, text, messageId, sendMessage, preferredCurrency, timeZone);
+}
+
+async function continuePendingTransaction(phone: string, pending: any, item: Interpretation, messageId: string, send: (to: string, text: string) => Promise<void>, currency: string, timeZone: string): Promise<void> {
+  if (Array.isArray(pending.payload?.multiEvents)) {
+    await recordMultipleTransactions(phone, pending.payload.multiEvents, pending.payload.sourceMessageId || pending.original_message_id || messageId, send, currency, timeZone, pending, messageId);
+    return;
+  }
+  const merged = { ...pending.payload };
+  if (item.amount) merged.amount = item.amount;
+  if (item.description) merged.description = item.description;
+  if (item.currency) merged.currency = item.currency;
+  if (item.transactionType) merged.activity_type = item.transactionType;
+  if (item.transactionDate) merged.activity_date = item.transactionDate;
+  if (merged.amount && merged.description && merged.activity_type) {
+    merged.currency ||= currency;
+    merged.activity_date ||= zonedDate(new Date(), timeZone);
+    const saved = await handleTransaction(phone, { type: "TRANSACTION", ...merged } as any, messageId, send);
+    if (saved) await api.clearPendingAction(phone);
+  } else {
+    await api.savePendingAction(phone, "TRANSACTION", merged, pending.original_message_id || messageId);
+    await send(phone, clarificationPrompt(!merged.amount ? "AMOUNT" : !merged.description ? "DESCRIPTION" : "TRANSACTION_TYPE"));
+  }
+}
+
+async function recordMultipleTransactions(phone: string, events: any[], sourceMessageId: string, send: (to: string, text: string) => Promise<void>, currency: string, timeZone: string, pending?: any, replyMessageId = sourceMessageId): Promise<void> {
+  let saved = 0;
+  for (let i = 0; i < events.length; i += 1) {
+    const tx = events[i];
+    const ok = await handleTransaction(phone, { type: "TRANSACTION", description: tx.description, activity_type: tx.transactionType, category: tx.category, amount: Number(tx.amount), currency: tx.currency || currency, activity_date: tx.transactionDate || zonedDate(new Date(), timeZone) } as any, `${sourceMessageId}:${i + 1}`, async () => {});
+    if (!ok) break;
+    saved += 1;
+  }
+  if (saved === events.length) {
+    if (pending) await api.clearPendingAction(phone);
+    await send(phone, `Recorded ${saved} transactions from your message.`);
+  } else {
+    await api.savePendingAction(phone, "TRANSACTION", { multiEvents: events, sourceMessageId }, pending?.original_message_id || replyMessageId);
+    await send(phone, `I saved ${saved} of ${events.length} transactions. Some records may already be saved safely. Reply retry to finish or cancel.`);
+  }
 }
 
 function clarificationPrompt(missing: Interpretation["missingInformation"]): string {
@@ -460,7 +574,7 @@ function addDateDays(date: string, days: number): string {
 }
 
 function financialQuestion(intent: Interpretation["intent"], period: Interpretation["period"] = "UNSPECIFIED"): Interpretation {
-  return { intent, statementStatus: "QUESTION", confidence: "HIGH", transactionType: "", amount: "", previousAmount: "", currency: "", description: "", category: "", transactionDate: "", period, startDate: "", endDate: "", compareStartDate: "", compareEndDate: "", name: "", searchQuery: "", fieldsToChange: [], missingInformation: "NONE" };
+  return { intent, statementStatus: "QUESTION", confidence: "HIGH", transactionType: "", amount: "", previousAmount: "", currency: "", description: "", category: "", transactionDate: "", period, startDate: "", endDate: "", compareStartDate: "", compareEndDate: "", name: "", searchQuery: "", fieldsToChange: [], missingInformation: "NONE", transactions: [] };
 }
 
 function monthBounds(year: number, monthIndex: number): [string, string] {
@@ -586,12 +700,23 @@ async function routeInterpretation(phone: string, item: Interpretation, raw: str
   if (item.intent === "PRIVACY") { await send(phone, privacyMessage()); return; }
   if (item.intent === "SUPPORT") { await send(phone, supportMessage()); return; }
   if (item.intent === "ACCOUNT_DELETE") { await saveAndAsk(phone, "ACCOUNT_DELETE_CONFIRM", {}, messageId, "This permanently deletes your FD account, profile, and saved financial records. Reply ‘delete my account’ to confirm, or ‘cancel’ to keep your data.", send); return; }
-  if (["RECORD_EXPENSE", "RECORD_INCOME", "RECORD_REFUND", "RECORD_LOAN_RECEIVED", "RECORD_LOAN_REPAYMENT"].includes(item.intent)) {
+  if (item.intent === "PROFILE_NAME_QUESTION") { await send(phone, "I couldn't retrieve your saved profile name just now. Please try again shortly."); return; }
+  if (item.intent === "PRODUCT_QUESTION") { await send(phone, "FD is a personal finance assistant built by Kamate Group Ltd. Welcome! I can record income, expenses, gifts, loans, refunds, and asset sales, and show summaries from your saved records."); return; }
+  if (item.intent === "MULTI_TRANSACTION") {
+    const events = item.transactions;
+    if (events.length < 2 || events.some((tx) => tx.statementStatus !== "COMPLETED" || tx.confidence !== "HIGH" || !tx.amount || !tx.description || !tx.transactionType)) {
+      await send(phone, "I found multiple possible events, but need a little more detail before recording them. Please send the amount and what happened for each event."); return;
+    }
+    await recordMultipleTransactions(phone, events, messageId, send, currency, timeZone);
+    return;
+  }
+  if (["RECORD_EXPENSE", "RECORD_INCOME", "RECORD_REFUND", "RECORD_LOAN_RECEIVED", "RECORD_LOAN_REPAYMENT", "RECORD_LOAN_GIVEN", "RECORD_LOAN_REPAYMENT_RECEIVED", "RECORD_GIFT_RECEIVED", "RECORD_ASSET_SALE"].includes(item.intent)) {
     if (item.statementStatus !== "COMPLETED" || item.confidence !== "HIGH") {
       await send(phone, "I only record completed transactions. Tell me once it has happened, with the amount and what it was for."); return;
     }
-    const missing = !item.amount ? "AMOUNT" : !item.description ? "DESCRIPTION" : !item.transactionType ? "TRANSACTION_TYPE" : !item.transactionDate ? "DATE" : "";
-    const payload = { amount: item.amount, currency: item.currency || currency, description: item.description, category: item.category, activity_type: item.transactionType, activity_date: item.transactionDate || zonedDate(new Date(), timeZone) };
+    const inferredTypes: Record<string, string> = { RECORD_EXPENSE: "EXPENSE", RECORD_INCOME: "INCOME", RECORD_REFUND: "REFUND", RECORD_LOAN_RECEIVED: "LOAN_RECEIVED", RECORD_LOAN_REPAYMENT: "LOAN_REPAYMENT", RECORD_LOAN_GIVEN: "LOAN_GIVEN", RECORD_LOAN_REPAYMENT_RECEIVED: "LOAN_REPAYMENT_RECEIVED", RECORD_GIFT_RECEIVED: "GIFT_RECEIVED", RECORD_ASSET_SALE: "ASSET_SALE" };
+    const missing = !item.amount ? "AMOUNT" : !item.description ? "DESCRIPTION" : !(item.transactionType || inferredTypes[item.intent]) ? "TRANSACTION_TYPE" : !item.transactionDate ? "DATE" : "";
+    const payload = { amount: item.amount, currency: item.currency || currency, description: item.description, category: item.category, activity_type: item.transactionType || inferredTypes[item.intent], activity_date: item.transactionDate || zonedDate(new Date(), timeZone) };
     if (missing) { await saveAndAsk(phone, "TRANSACTION", payload, messageId, clarificationPrompt(missing as any), send); return; }
     await api.clearPendingAction(phone);
     await handleTransaction(phone, { type: "TRANSACTION", ...payload } as any, messageId, send); return;
@@ -636,6 +761,7 @@ async function handlePendingAction(phone: string, pending: any, text: string, me
     try {
       await api.deleteAccountData(phone, messageId);
       registeredPhones.delete(phone);
+      profileStatusCache.delete(phone);
       onboardingState.delete(phone);
       await send(phone, "Your FD account and saved financial records have been deleted.");
     } catch (error: any) {

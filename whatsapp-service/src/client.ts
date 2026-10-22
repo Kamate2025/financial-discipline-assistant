@@ -284,7 +284,12 @@ export async function processMessageUpsert(
           }
 
           console.info(`[${new Date().toISOString()}] Private inbound message identity resolved via ${sender.resolutionSource}; reply route ${sender.replyJid.endsWith("@lid") ? "LID" : "phone JID"}. Message text and identifiers omitted.`);
-          await onMessage(sender.phoneJid, text, messageId, sender.replyJid);
+          const dispatchStartedAt = Date.now();
+          try {
+            await onMessage(sender.phoneJid, text, messageId, sender.replyJid);
+          } finally {
+            console.info(`[${new Date().toISOString()}] [Baileys][${correlation}] FD dispatch completed in ${Date.now() - dispatchStartedAt}ms.`);
+          }
         }
         catch (error: unknown) {
           console.error(`[${new Date().toISOString()}] Incoming message processing failed (${safeErrorDetails(error)}).`);

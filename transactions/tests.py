@@ -633,6 +633,21 @@ class FinancialSummaryServiceTests(TestCase):
         self.assertEqual(summary.loan_repayment_total, Decimal("150.00"))
         self.assertEqual(summary.net_cash_flow, Decimal("450.00"))
 
+    def test_lending_repayments_gifts_and_asset_sales_remain_distinct(self):
+        for activity, amount in [
+            (Transaction.ActivityType.LOAN_GIVEN, "200.00"),
+            (Transaction.ActivityType.LOAN_REPAYMENT_RECEIVED, "50.00"),
+            (Transaction.ActivityType.GIFT_RECEIVED, "30.00"),
+            (Transaction.ActivityType.ASSET_SALE, "120.00"),
+        ]:
+            self._create_txn(self.user, activity, amount, "UGX", date(2026, 1, 10))
+        summary = calculate_user_summary(self.user, date(2026, 1, 1), date(2026, 1, 31))[0]
+        self.assertEqual(summary.loan_given_total, Decimal("200.00"))
+        self.assertEqual(summary.loan_repayment_received_total, Decimal("50.00"))
+        self.assertEqual(summary.gift_received_total, Decimal("30.00"))
+        self.assertEqual(summary.asset_sale_total, Decimal("120.00"))
+        self.assertEqual(summary.net_cash_flow, Decimal("0.00"))
+
     def test_date_boundaries_are_inclusive(self):
         self._create_txn(self.user, Transaction.ActivityType.INCOME, "1000.00", "UGX", date(2026, 1, 1))
         self._create_txn(self.user, Transaction.ActivityType.INCOME, "2000.00", "UGX", date(2026, 1, 31))

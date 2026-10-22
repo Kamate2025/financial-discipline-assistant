@@ -7,12 +7,20 @@ export interface DjangoUserSummary {
   refund_total: string;
   loan_received_total: string;
   loan_repayment_total: string;
+  loan_given_total: string;
+  loan_repayment_received_total: string;
+  gift_received_total: string;
+  asset_sale_total: string;
   net_cash_flow: string;
   income_count: number;
   expense_count: number;
   refund_count: number;
   loan_received_count: number;
   loan_repayment_count: number;
+  loan_given_count: number;
+  loan_repayment_received_count: number;
+  gift_received_count: number;
+  asset_sale_count: number;
   transfer_count: number;
 }
 
@@ -134,7 +142,7 @@ export class DjangoApiClient {
 
   async recordTransaction(phoneNumber: string, payload: {
     description: string;
-    activity_type: "INCOME" | "EXPENSE" | "REFUND" | "LOAN_RECEIVED" | "LOAN_REPAYMENT" | "TRANSFER";
+    activity_type: "INCOME" | "EXPENSE" | "REFUND" | "LOAN_RECEIVED" | "LOAN_REPAYMENT" | "LOAN_GIVEN" | "LOAN_REPAYMENT_RECEIVED" | "GIFT_RECEIVED" | "ASSET_SALE" | "TRANSFER";
     category: string;
     amount: string;
     currency: string;

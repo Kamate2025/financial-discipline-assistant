@@ -23,6 +23,7 @@ const validInterpretation = (overrides = {}) => ({
   searchQuery: '',
   fieldsToChange: [],
   missingInformation: 'NONE',
+  transactions: [],
   ...overrides,
 });
 
@@ -106,6 +107,15 @@ test('structured sentinel values normalize to empty optional fields', () => {
   const result = validateInterpretation(validInterpretation({ transactionType: 'UNSPECIFIED', category: 'UNSPECIFIED' }));
   assert.equal(result.transactionType, '');
   assert.equal(result.category, '');
+});
+
+test('structured multi-event extraction preserves separate activity types and amounts', () => {
+  const events = [
+    { statementStatus: 'COMPLETED', confidence: 'HIGH', transactionType: 'LOAN_GIVEN', amount: '20000', currency: 'UGX', description: 'loan to Jane', category: 'PERSONAL', transactionDate: '2026-10-22', missingInformation: 'NONE' },
+    { statementStatus: 'COMPLETED', confidence: 'HIGH', transactionType: 'GIFT_RECEIVED', amount: '5000', currency: 'UGX', description: 'gift from my aunt', category: 'PERSONAL', transactionDate: '2026-10-22', missingInformation: 'NONE' },
+  ];
+  const result = validateInterpretation(validInterpretation({ intent: 'MULTI_TRANSACTION', transactions: events }));
+  assert.deepEqual(result.transactions.map(({ transactionType, amount }) => [transactionType, amount]), [['LOAN_GIVEN', '20000'], ['GIFT_RECEIVED', '5000']]);
 });
 
 test('temporary Gemini server errors receive one bounded retry', async () => {
