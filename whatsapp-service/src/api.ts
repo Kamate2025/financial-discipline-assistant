@@ -4,9 +4,15 @@ export interface DjangoUserSummary {
   currency: string;
   income_total: string;
   expense_total: string;
+  refund_total: string;
+  loan_received_total: string;
+  loan_repayment_total: string;
   net_cash_flow: string;
   income_count: number;
   expense_count: number;
+  refund_count: number;
+  loan_received_count: number;
+  loan_repayment_count: number;
   transfer_count: number;
 }
 
@@ -14,12 +20,39 @@ export interface DjangoTransaction {
   id: number;
   description: string;
   activity_type: string;
+  category: string;
   amount: string;
   currency: string;
   activity_date: string;
   owner: number;
   created_at: string;
   updated_at: string;
+  is_voided: boolean;
+  voided_at: string | null;
+}
+
+export interface PendingAction {
+  action_type: "TRANSACTION" | "CORRECTION" | "CORRECTION_SELECT" | "DELETE_CONFIRM" | "UNDO_CONFIRM" | "ACCOUNT_DELETE_CONFIRM";
+  payload: Record<string, any>;
+  original_message_id?: string;
+  expires_at?: string;
+}
+
+export interface ActiveCountry {
+  name: string;
+  country_code: string;
+  currency_code: string;
+  currency_name: string;
+}
+
+export interface OnboardingStatus {
+  registered: boolean;
+  preferred_name?: string;
+  needs_name?: boolean;
+  needs_country?: boolean;
+  country_code?: string | null;
+  currency_code?: string | null;
+  time_zone?: string;
 }
 
 export function isUnknownWhatsAppPhoneResponse(status: unknown, detail: unknown): boolean {
@@ -79,9 +112,30 @@ export class DjangoApiClient {
     return response.data;
   }
 
+  async saveWhatsAppCountry(phoneNumber: string, countryCode: string): Promise<{ created: boolean }> {
+    const response = await this.client.post("/api/v1/onboarding/", {
+      phone_number: phoneNumber,
+      country_code: countryCode,
+    });
+    return response.data;
+  }
+
+  async getOnboardingStatus(phoneNumber: string): Promise<OnboardingStatus> {
+    const response = await this.client.get("/api/v1/onboarding/status/", {
+      headers: { "X-WhatsApp-Phone": phoneNumber },
+    });
+    return response.data;
+  }
+
+  async getActiveCountries(): Promise<ActiveCountry[]> {
+    const response = await this.client.get("/api/v1/countries/");
+    return response.data;
+  }
+
   async recordTransaction(phoneNumber: string, payload: {
     description: string;
-    activity_type: "INCOME" | "EXPENSE" | "TRANSFER";
+    activity_type: "INCOME" | "EXPENSE" | "REFUND" | "LOAN_RECEIVED" | "LOAN_REPAYMENT" | "TRANSFER";
+    category: string;
     amount: string;
     currency: string;
     activity_date: string;
@@ -99,12 +153,75 @@ export class DjangoApiClient {
     return response.data;
   }
 
+  async getTransactions(phoneNumber: string, search = "", recent = false, amount = ""): Promise<DjangoTransaction[]> {
+    const response = await this.client.get("/api/v1/transactions/", {
+      params: { ...(search ? { search } : {}), ...(recent ? { recent: "1" } : {}), ...(amount ? { amount } : {}) },
+      headers: { "X-WhatsApp-Phone": phoneNumber },
+    });
+    return Array.isArray(response.data.results) ? response.data.results : response.data;
+  }
+
+  async updateTransaction(phoneNumber: string, id: number, changes: Record<string, unknown>): Promise<DjangoTransaction> {
+    const response = await this.client.patch(`/api/v1/transactions/${id}/`, changes, {
+      headers: { "X-WhatsApp-Phone": phoneNumber },
+    });
+    return response.data;
+  }
+
+  async voidTransaction(phoneNumber: string, id: number, reason: "UNDO" | "DELETE", messageId: string): Promise<DjangoTransaction> {
+    const response = await this.client.post(`/api/v1/transactions/${id}/void/`, { reason }, {
+      headers: {
+        "X-WhatsApp-Phone": phoneNumber,
+        "X-WhatsApp-Message-ID": messageId,
+      },
+    });
+    return response.data;
+  }
+
+  async getPendingAction(phoneNumber: string): Promise<PendingAction | null> {
+    const response = await this.client.get("/api/v1/pending-action/", {
+      headers: { "X-WhatsApp-Phone": phoneNumber },
+    });
+    return response.data.pending || null;
+  }
+
+  async savePendingAction(phoneNumber: string, actionType: PendingAction["action_type"], payload: Record<string, any>, messageId: string): Promise<void> {
+    await this.client.post("/api/v1/pending-action/", {
+      action_type: actionType,
+      payload,
+      original_message_id: messageId,
+    }, { headers: { "X-WhatsApp-Phone": phoneNumber } });
+  }
+
+  async clearPendingAction(phoneNumber: string): Promise<void> {
+    await this.client.delete("/api/v1/pending-action/", {
+      headers: { "X-WhatsApp-Phone": phoneNumber },
+    });
+  }
+
   async getSummary(phoneNumber: string, startDate: string, endDate: string): Promise<DjangoUserSummary[]> {
     const response = await this.client.get("/api/v1/summaries/", {
       params: { start_date: startDate, end_date: endDate },
       headers: { "X-WhatsApp-Phone": phoneNumber },
     });
     return response.data;
+  }
+
+  async getFinancialInsights(phoneNumber: string, params: {
+    start_date: string; end_date: string; compare_start_date?: string; compare_end_date?: string;
+    search?: string; category?: string;
+  }): Promise<any> {
+    const response = await this.client.get("/api/v1/insights/", {
+      params,
+      headers: { "X-WhatsApp-Phone": phoneNumber },
+    });
+    return response.data;
+  }
+
+  async deleteAccountData(phoneNumber: string, messageId: string): Promise<void> {
+    await this.client.delete("/api/v1/account/data/", {
+      headers: { "X-WhatsApp-Phone": phoneNumber, "X-WhatsApp-Message-ID": messageId },
+    });
   }
 
   async healthCheck(): Promise<{ status: string }> {

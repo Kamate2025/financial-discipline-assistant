@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 
-from .models import ProcessedMessage, Transaction, UserProfile
+from .models import Country, Currency, PendingAction, ProcessedMessage, Transaction, UserProfile
 from .services import calculate_user_summary
 
 
@@ -106,6 +106,14 @@ class TransactionAPITests(TestCase):
         txn = Transaction.objects.get(pk=response.data["id"])
         self.assertEqual(txn.owner, self.user)
 
+    def test_new_transfer_entries_are_rejected(self):
+        response = self.client.post("/api/v1/transactions/", {
+            "description": "Move between accounts", "activity_type": "TRANSFER", "amount": "1000",
+            "currency": "UGX", "activity_date": "2026-01-15",
+        }, content_type="application/json")
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Transaction.objects.filter(description="Move between accounts").exists())
+
     def test_ownership_assigned_from_authenticated_user(self):
         response = self.client.post(
             "/api/v1/transactions/",
@@ -120,6 +128,36 @@ class TransactionAPITests(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["owner"], self.user.pk)
+
+    def test_transaction_search_is_scoped_and_excludes_voided_records(self):
+        Transaction.objects.create(owner=self.user, description="Campus lunch", category="FOOD", activity_type="EXPENSE", amount="15000", currency="UGX", activity_date="2026-01-15")
+        Transaction.objects.create(owner=self.other_user, description="Campus lunch", category="FOOD", activity_type="EXPENSE", amount="15000", currency="UGX", activity_date="2026-01-15")
+        hidden = Transaction.objects.create(owner=self.user, description="Old lunch", activity_type="EXPENSE", amount="15000", currency="UGX", activity_date="2026-01-15", is_voided=True)
+        response = self.client.get("/api/v1/transactions/?search=lunch&amount=15000")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["description"] for row in response.data["results"]], ["Campus lunch"])
+        self.assertNotIn(hidden.pk, [row["id"] for row in response.data["results"]])
+
+    def test_pending_action_is_persisted_and_scoped_to_profile(self):
+        profile = UserProfile.objects.create(user=self.user, phone_number="+256787360381", preferred_name="Sam")
+        response = self.client.post("/api/v1/pending-action/", {
+            "action_type": "TRANSACTION", "payload": {"amount": "15000"}, "original_message_id": "ask-1",
+        }, content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(PendingAction.objects.get(profile=profile).payload["amount"], "15000")
+        self.assertEqual(self.client.get("/api/v1/pending-action/").data["pending"]["action_type"], "TRANSACTION")
+
+    def test_void_endpoint_retains_record_and_is_idempotent(self):
+        record = Transaction.objects.create(owner=self.user, description="Lunch", activity_type="EXPENSE", amount="15000", currency="UGX", activity_date="2026-01-15")
+        first = self.client.post(f"/api/v1/transactions/{record.pk}/void/", {"reason": "UNDO"}, content_type="application/json", HTTP_X_WHATSAPP_MESSAGE_ID="undo-1")
+        second = self.client.post(f"/api/v1/transactions/{record.pk}/void/", {"reason": "UNDO"}, content_type="application/json", HTTP_X_WHATSAPP_MESSAGE_ID="undo-1")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        record.refresh_from_db()
+        self.assertTrue(record.is_voided)
+        self.assertEqual(record.void_reason, "UNDO")
+        self.assertEqual(ProcessedMessage.objects.filter(message_id="undo-1").count(), 1)
+        self.assertFalse(self.client.get("/api/v1/transactions/").data["results"])
 
     def test_list_only_own_records(self):
         Transaction.objects.create(
@@ -371,6 +409,37 @@ class UserProfileTests(TestCase):
                 )
 
 
+class CountryCurrencyModelTests(TestCase):
+    def test_seeded_uganda_and_ugx_are_active_and_related(self):
+        uganda = Country.objects.get(country_code="UG")
+        ugx = Currency.objects.get(code="UGX")
+        self.assertTrue(uganda.is_active)
+        self.assertEqual(uganda.default_currency, ugx)
+        self.assertTrue(uganda.currencies.filter(pk=ugx.pk).exists())
+        self.assertEqual(ugx.name, "Ugandan shilling")
+
+    def test_currency_code_validation_and_normalization(self):
+        currency = Currency(code="kes", name="Kenyan shilling")
+        currency.full_clean()
+        self.assertEqual(currency.code, "KES")
+        with self.assertRaises(ValidationError):
+            Currency(code="U1X", name="Invalid").full_clean()
+
+    def test_country_code_validation_and_normalization(self):
+        currency = Currency.objects.get(code="UGX")
+        country = Country(name="Test", country_code="ke", default_currency=currency)
+        country.full_clean()
+        self.assertEqual(country.country_code, "KE")
+        with self.assertRaises(ValidationError):
+            Country(name="Invalid", country_code="USA", default_currency=currency).full_clean()
+
+    def test_user_preferences_may_remain_empty_for_legacy_profiles(self):
+        user = get_user_model().objects.create_user(username="legacy-profile")
+        profile = UserProfile.objects.create(user=user, phone_number="+256700000111")
+        self.assertIsNone(profile.country_id)
+        self.assertIsNone(profile.preferred_currency_id)
+
+
 @override_settings(DJANGO_SERVICE_KEY="test-service-key")
 class WhatsAppOnboardingAPITests(TestCase):
     endpoint = "/api/v1/onboarding/"
@@ -401,6 +470,58 @@ class WhatsAppOnboardingAPITests(TestCase):
         self.assertEqual(self.post_profile(service_key="wrong").status_code, 403)
         self.assertEqual(self.post_profile(phone="not-a-phone").status_code, 400)
         self.assertEqual(self.post_profile(name=" ").status_code, 400)
+
+    def test_only_active_configured_countries_are_selectable(self):
+        response = self.client.get("/api/v1/countries/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([country["country_code"] for country in response.data], ["UG"])
+
+        kes = Currency.objects.create(code="KES", name="Kenyan shilling", is_active=True)
+        kenya = Country.objects.create(name="Kenya", country_code="KE", default_currency=kes, is_active=False)
+        kenya.currencies.add(kes)
+        response = self.client.get("/api/v1/countries/")
+        self.assertEqual([country["country_code"] for country in response.data], ["UG"])
+
+    def test_country_selection_assigns_the_configured_default_currency(self):
+        self.post_profile(name="Sam")
+        response = self.client.post(
+            self.endpoint,
+            {"phone_number": "256700123456", "country_code": "ug"},
+            content_type="application/json",
+            HTTP_X_SERVICE_KEY="test-service-key",
+        )
+        self.assertEqual(response.status_code, 200)
+        profile = UserProfile.objects.get(phone_number="+256700123456")
+        self.assertEqual(profile.preferred_name, "Sam")
+        self.assertEqual(profile.country.country_code, "UG")
+        self.assertEqual(profile.preferred_currency.code, "UGX")
+
+    def test_inactive_country_cannot_be_selected_and_existing_profile_is_preserved(self):
+        self.post_profile(name="Sam")
+        kes = Currency.objects.create(code="KES", name="Kenyan shilling")
+        kenya = Country.objects.create(name="Kenya", country_code="KE", default_currency=kes, is_active=False)
+        kenya.currencies.add(kes)
+        response = self.client.post(
+            self.endpoint,
+            {"phone_number": "256700123456", "country_code": "KE"},
+            content_type="application/json",
+            HTTP_X_SERVICE_KEY="test-service-key",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(UserProfile.objects.filter(phone_number="+256700123456").count(), 1)
+        self.assertIsNone(UserProfile.objects.get(phone_number="+256700123456").country_id)
+
+    def test_status_reports_saved_name_and_country_step(self):
+        self.post_profile(name="Sam")
+        response = self.client.get(
+            "/api/v1/onboarding/status/",
+            HTTP_X_SERVICE_KEY="test-service-key",
+            HTTP_X_WHATSAPP_PHONE="256700123456",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["registered"])
+        self.assertEqual(response.data["preferred_name"], "Sam")
+        self.assertTrue(response.data["needs_country"])
 
 
 @override_settings(DJANGO_SERVICE_KEY="test-service-key")
@@ -501,6 +622,16 @@ class FinancialSummaryServiceTests(TestCase):
         self.assertEqual(summary.income_count, 1)
         self.assertEqual(summary.expense_count, 1)
         self.assertEqual(summary.transfer_count, 1)
+
+    def test_refunds_and_loans_have_separate_totals_and_cash_flow(self):
+        self._create_txn(self.user, Transaction.ActivityType.REFUND, "100.00", "UGX", date(2026, 1, 10))
+        self._create_txn(self.user, Transaction.ActivityType.LOAN_RECEIVED, "500.00", "UGX", date(2026, 1, 11))
+        self._create_txn(self.user, Transaction.ActivityType.LOAN_REPAYMENT, "150.00", "UGX", date(2026, 1, 12))
+        summary = calculate_user_summary(self.user, date(2026, 1, 1), date(2026, 1, 31))[0]
+        self.assertEqual(summary.refund_total, Decimal("100.00"))
+        self.assertEqual(summary.loan_received_total, Decimal("500.00"))
+        self.assertEqual(summary.loan_repayment_total, Decimal("150.00"))
+        self.assertEqual(summary.net_cash_flow, Decimal("450.00"))
 
     def test_date_boundaries_are_inclusive(self):
         self._create_txn(self.user, Transaction.ActivityType.INCOME, "1000.00", "UGX", date(2026, 1, 1))
@@ -776,8 +907,11 @@ class TransactionUpdateDestroyAPITests(TestCase):
             Transaction.ActivityType.EXPENSE, "50000.00", "UGX", date(2026, 1, 10)
         )
         response = self.client.delete(f"/api/v1/transactions/{txn.pk}/")
-        self.assertEqual(response.status_code, 204)
-        self.assertFalse(Transaction.objects.filter(pk=txn.pk).exists())
+        self.assertEqual(response.status_code, 200)
+        txn.refresh_from_db()
+        self.assertTrue(txn.is_voided)
+        self.assertEqual(txn.void_reason, "DELETE")
+        self.assertTrue(Transaction.objects.filter(pk=txn.pk).exists())
 
     def test_delete_another_users_transaction_returns_404(self):
         other_txn = Transaction.objects.create(
@@ -873,3 +1007,57 @@ class TransactionUpdateDestroyAPITests(TestCase):
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["expense_total"], "0.00")
         self.assertEqual(data[0]["expense_count"], 0)
+
+
+class StageThreeInsightsAndPrivacyAPITests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="stage3-user", password="pass123")
+        self.other = get_user_model().objects.create_user(username="stage3-other", password="pass123")
+        self.client.force_login(self.user)
+
+    def create_transaction(self, owner, description, kind, amount, category, day, currency="UGX"):
+        return Transaction.objects.create(owner=owner, description=description, activity_type=kind, amount=amount, category=category, currency=currency, activity_date=day)
+
+    def test_insights_calculate_categories_top_records_and_comparison_per_currency(self):
+        self.create_transaction(self.user, "Lunch at Africana Hotel", "EXPENSE", "15000", "FOOD", date(2026, 10, 15))
+        self.create_transaction(self.user, "Hotel room", "EXPENSE", "40000", "HOUSING", date(2026, 10, 15))
+        self.create_transaction(self.user, "Lunch last month", "EXPENSE", "10000", "FOOD", date(2026, 9, 15))
+        self.create_transaction(self.user, "Salary", "INCOME", "100000", "SALARY", date(2026, 10, 1))
+        self.create_transaction(self.other, "Other user's hotel", "EXPENSE", "900000", "HOUSING", date(2026, 10, 15))
+        response = self.client.get("/api/v1/insights/?start_date=2026-10-01&end_date=2026-10-31&compare_start_date=2026-09-01&compare_end_date=2026-09-30&search=AFRICANA")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["transaction_count"], 1)
+        self.assertEqual(response.data["matching_transactions"][0]["description"], "Lunch at Africana Hotel")
+        self.assertEqual(response.data["currencies"][0]["expense_total"], Decimal("15000"))
+        self.assertEqual(response.data["largest_expenses"][0]["amount"], Decimal("15000"))
+
+    def test_insights_comparison_excludes_other_users_and_keeps_currencies_separate(self):
+        self.create_transaction(self.user, "Current UGX", "EXPENSE", "30000", "FOOD", date(2026, 10, 10))
+        self.create_transaction(self.user, "Prior UGX", "EXPENSE", "20000", "FOOD", date(2026, 9, 10))
+        self.create_transaction(self.user, "Current USD", "EXPENSE", "10", "FOOD", date(2026, 10, 11), "USD")
+        self.create_transaction(self.other, "Other", "EXPENSE", "999999", "FOOD", date(2026, 10, 11))
+        response = self.client.get("/api/v1/insights/?start_date=2026-10-01&end_date=2026-10-31&compare_start_date=2026-09-01&compare_end_date=2026-09-30")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["currency"] for row in response.data["currencies"]], ["UGX", "USD"])
+        self.assertEqual(len(response.data["comparisons"]), 2)
+        self.assertEqual([row["currency"] for row in response.data["largest_expenses"]], ["UGX", "USD"])
+        self.assertEqual(response.data["comparisons"][0]["current_expense_total"], Decimal("30000"))
+
+    def test_account_deletion_removes_only_confirmed_authenticated_users_data(self):
+        profile = UserProfile.objects.create(user=self.user, phone_number="+256700000001", preferred_name="Stage Three")
+        txn = self.create_transaction(self.user, "Lunch", "EXPENSE", "15000", "FOOD", date(2026, 10, 15))
+        ProcessedMessage.objects.create(message_id="stage3-owned-message", transaction=txn)
+        other_txn = self.create_transaction(self.other, "Other lunch", "EXPENSE", "20000", "FOOD", date(2026, 10, 15))
+        ProcessedMessage.objects.create(message_id="stage3-other-message", transaction=other_txn)
+        response = self.client.delete("/api/v1/account/data/", HTTP_X_WHATSAPP_MESSAGE_ID="confirmed-delete-1")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(get_user_model().objects.filter(pk=self.user.pk).exists())
+        self.assertFalse(UserProfile.objects.filter(pk=profile.pk).exists())
+        self.assertFalse(Transaction.objects.filter(pk=txn.pk).exists())
+        self.assertTrue(Transaction.objects.filter(pk=other_txn.pk).exists())
+        self.assertEqual(ProcessedMessage.objects.filter(message_id="stage3-owned-message").count(), 0)
+        self.assertEqual(ProcessedMessage.objects.filter(message_id="stage3-other-message").count(), 1)
+
+    def test_insights_reject_incomplete_comparison_range(self):
+        response = self.client.get("/api/v1/insights/?start_date=2026-10-01&end_date=2026-10-31&compare_start_date=2026-09-01")
+        self.assertEqual(response.status_code, 400)

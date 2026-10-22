@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from collections import defaultdict
 
 from django.core.exceptions import ValidationError
 
@@ -17,13 +18,25 @@ class FinancialSummary:
         self.currency = currency
         self.income_total = Decimal("0.00")
         self.expense_total = Decimal("0.00")
+        self.refund_total = Decimal("0.00")
+        self.loan_received_total = Decimal("0.00")
+        self.loan_repayment_total = Decimal("0.00")
         self.income_count = 0
         self.expense_count = 0
+        self.refund_count = 0
+        self.loan_received_count = 0
+        self.loan_repayment_count = 0
         self.transfer_count = 0
 
     @property
     def net_cash_flow(self):
-        return self.income_total - self.expense_total
+        return (
+            self.income_total
+            - self.expense_total
+            + self.refund_total
+            + self.loan_received_total
+            - self.loan_repayment_total
+        )
 
 
 def calculate_user_summary(user, start_date, end_date):
@@ -43,6 +56,7 @@ def calculate_user_summary(user, start_date, end_date):
 
     transactions = Transaction.objects.filter(
         owner=user,
+        is_voided=False,
         activity_date__gte=start_date,
         activity_date__lte=end_date,
     ).order_by("currency", "activity_type")
@@ -60,10 +74,93 @@ def calculate_user_summary(user, start_date, end_date):
         elif txn.activity_type == Transaction.ActivityType.EXPENSE:
             summary.expense_total += txn.amount
             summary.expense_count += 1
+        elif txn.activity_type == Transaction.ActivityType.REFUND:
+            summary.refund_total += txn.amount
+            summary.refund_count += 1
+        elif txn.activity_type == Transaction.ActivityType.LOAN_RECEIVED:
+            summary.loan_received_total += txn.amount
+            summary.loan_received_count += 1
+        elif txn.activity_type == Transaction.ActivityType.LOAN_REPAYMENT:
+            summary.loan_repayment_total += txn.amount
+            summary.loan_repayment_count += 1
         elif txn.activity_type == Transaction.ActivityType.TRANSFER:
             summary.transfer_count += 1
 
     return sorted(summaries.values(), key=lambda s: s.currency)
+
+
+def calculate_financial_insights(user, start_date, end_date, compare_start=None, compare_end=None, search="", category=""):
+    """Return exact, user-scoped insight data without combining currencies."""
+    if start_date > end_date or (compare_start and compare_end and compare_start > compare_end):
+        raise ValueError("Date ranges must be ordered.")
+    base = Transaction.objects.filter(owner=user, is_voided=False)
+    if search:
+        normalized = " ".join(search.casefold().split())
+        # Match normalized whitespace/case at query time without changing data.
+        for token in normalized.split():
+            base = base.filter(description__icontains=token)
+    if category:
+        base = base.filter(category__iexact=category)
+    current_qs = base.filter(activity_date__gte=start_date, activity_date__lte=end_date)
+    current = list(current_qs.order_by("-activity_date", "-pk"))
+    expenses_by_currency = defaultdict(list)
+    for tx in current:
+        if tx.activity_type == Transaction.ActivityType.EXPENSE:
+            expenses_by_currency[tx.currency].append(tx)
+    largest = []
+    for currency in sorted(expenses_by_currency):
+        largest.extend(sorted(expenses_by_currency[currency], key=lambda tx: (-tx.amount, -tx.activity_date.toordinal(), -tx.pk))[:5])
+    previous = list(base.filter(activity_date__gte=compare_start, activity_date__lte=compare_end).order_by("currency", "activity_type")) if compare_start and compare_end else []
+
+    def aggregate(records):
+        data = {}
+        categories = defaultdict(lambda: defaultdict(lambda: Decimal("0.00")))
+        daily = defaultdict(lambda: defaultdict(lambda: Decimal("0.00")))
+        for tx in records:
+            row = data.setdefault(tx.currency, {
+                "currency": tx.currency, "income_total": Decimal("0.00"), "expense_total": Decimal("0.00"),
+                "refund_total": Decimal("0.00"), "loan_received_total": Decimal("0.00"),
+                "loan_repayment_total": Decimal("0.00"), "income_count": 0, "expense_count": 0,
+                "refund_count": 0, "loan_received_count": 0, "loan_repayment_count": 0,
+            })
+            kind = tx.activity_type.lower()
+            if kind in {"income", "expense", "refund", "loan_received", "loan_repayment"}:
+                field = f"{kind}_total"
+                row[field] += tx.amount
+                row[f"{kind}_count"] += 1
+            if tx.activity_type == Transaction.ActivityType.EXPENSE:
+                categories[tx.currency][tx.category or "UNCATEGORIZED"] += tx.amount
+                daily[tx.currency][tx.activity_date.isoformat()] += tx.amount
+        for row in data.values():
+            row["net_cash_flow"] = row["income_total"] - row["expense_total"] + row["refund_total"] + row["loan_received_total"] - row["loan_repayment_total"]
+            row["category_breakdown"] = [
+                {"category": name, "expense_total": amount}
+                for name, amount in sorted(categories[row["currency"]].items(), key=lambda item: (-item[1], item[0]))
+            ]
+            row["daily_expenses"] = [{"date": day, "expense_total": amount} for day, amount in sorted(daily[row["currency"]].items())]
+        return data
+
+    current_totals, previous_totals = aggregate(current), aggregate(previous)
+    comparisons = []
+    for currency in sorted(set(current_totals) | set(previous_totals)):
+        now = current_totals.get(currency, {})
+        before = previous_totals.get(currency, {})
+        now_categories = {x["category"]: x["expense_total"] for x in now.get("category_breakdown", [])}
+        old_categories = {x["category"]: x["expense_total"] for x in before.get("category_breakdown", [])}
+        changes = [{"category": name, "current_total": now_categories.get(name, Decimal("0.00")), "previous_total": old_categories.get(name, Decimal("0.00")), "change": now_categories.get(name, Decimal("0.00")) - old_categories.get(name, Decimal("0.00"))} for name in sorted(set(now_categories) | set(old_categories))]
+        comparisons.append({"currency": currency, "current_expense_total": now.get("expense_total", Decimal("0.00")), "previous_expense_total": before.get("expense_total", Decimal("0.00")), "current_income_total": now.get("income_total", Decimal("0.00")), "previous_income_total": before.get("income_total", Decimal("0.00")), "category_changes": sorted(changes, key=lambda row: (-abs(row["change"]), row["category"]))})
+
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "compare_start_date": compare_start,
+        "compare_end_date": compare_end,
+        "currencies": [current_totals[key] for key in sorted(current_totals)],
+        "comparisons": comparisons,
+        "matching_transactions": [{"id": tx.pk, "description": tx.description, "activity_type": tx.activity_type, "category": tx.category, "amount": tx.amount, "currency": tx.currency, "activity_date": tx.activity_date} for tx in current[:100]],
+        "largest_expenses": [{"id": tx.pk, "description": tx.description, "category": tx.category, "amount": tx.amount, "currency": tx.currency, "activity_date": tx.activity_date} for tx in largest],
+        "transaction_count": len(current),
+    }
 
 
 class TransactionRecordingError(Exception):

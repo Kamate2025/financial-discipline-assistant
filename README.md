@@ -75,6 +75,8 @@ The WhatsApp service, together with the ProcessedMessage model, guards against d
 
 ## Installation and startup
 
+For Ubuntu VPS setup, service supervision, database backup and migrations, Nginx integration, verification, and rollback, see the [deployment guide](docs/DEPLOYMENT.md).
+
 The project is intended to run locally on a Windows system with a Python virtual environment and a Node.js environment. The Django app should be started with the project’s Python environment, while the WhatsApp service should be started from its own directory so it can resolve the shared root environment file and connect to the Django backend.
 
 The root environment file must remain in the project root and should not be moved or duplicated. The system is designed to use one shared configuration for both services, with the WhatsApp service explicitly resolving the project-root settings before it starts listening for messages.

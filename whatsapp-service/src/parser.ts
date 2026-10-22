@@ -6,6 +6,7 @@ export interface ParsedTransaction {
   amount: number;
   currency: string;
   description: string;
+  category?: string;
   activity_date: string;
 }
 
@@ -28,6 +29,12 @@ export interface SummaryRequest {
 export interface AmbiguousRequest {
   type: "AMBIGUOUS";
   question: string;
+  pendingTransaction?: {
+    amount: string;
+    currency: string;
+    description: string;
+    activity_date: string;
+  };
 }
 
 export interface UnsupportedRequest {
@@ -60,19 +67,32 @@ function containsAny(text: string, keywords: string[]): boolean {
 }
 
 function extractAmount(text: string): { amount: number; sourceText: string } | "multiple" | null {
-  const withoutDate = text.replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, " ");
-  const matches = [...withoutDate.matchAll(/\b\d+(?:(?:,|\s)\d{3})*(?:\.\d{1,2})?\b/g)];
+  const withoutDate = stripDateExpressions(text);
+  const matches = [...withoutDate.matchAll(/\b\d+(?:\.\d+)?\s*[kmb]\b|\b\d+(?:(?:,|\s)\d{3})*(?:\.\d{1,2})?\b/gi)];
   if (matches.length > 1) return "multiple";
   const match = matches[0];
   if (!match) return null;
-  const value = Number(match[0].replace(/[ ,]/g, ""));
+  const token = match[0].replace(/\s/g, "").toLowerCase();
+  const suffix = token.slice(-1);
+  const multiplier = suffix === "k" ? 1_000 : suffix === "m" ? 1_000_000 : suffix === "b" ? 1_000_000_000 : 1;
+  const value = Number(/[kmb]$/.test(token) ? token.slice(0, -1) : token.replace(/[ ,]/g, "")) * multiplier;
   return !Number.isFinite(value) || value <= 0 ? null : { amount: value, sourceText: match[0] };
 }
 
+function stripDateExpressions(text: string): string {
+  const months = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+  return text
+    .replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, " ")
+    .replace(new RegExp(`\\b(?:on\\s+)?\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${months})(?:,?\\s+\\d{4})?\\b`, "gi"), " ")
+    .replace(new RegExp(`\\b(?:${months})\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?\\b`, "gi"), " ");
+}
 
-function extractCurrency(text: string): string {
-  const match = text.match(/\b(UGX|USD|KES|EUR|GBP)\b/i);
-  return match ? match[1].toUpperCase() : "UGX";
+
+function extractCurrency(text: string, defaultCurrency: string): string {
+  const defaultCode = defaultCurrency.toUpperCase();
+  const tokens = text.match(/\b[A-Za-z]{3}\b/g) || [];
+  const explicit = tokens.find((token) => token === token.toUpperCase() || token.toUpperCase() === defaultCode);
+  return explicit ? explicit.toUpperCase() : defaultCode;
 }
 
 function extractDescription(text: string, amountStr: string, currency: string): string {
@@ -100,10 +120,9 @@ function isSummary(text: string): boolean {
   return (
     lower === "summary" ||
     /^(?:show|give|send|display) (?:me )?(?:my )?(?:spending )?summary\??$/.test(lower) ||
-    /^(?:what did i spend|how much did i spend|what have i spent)(?: on)? (?:today|yesterday)\??$/.test(lower) ||
-    lower.startsWith("summarise") ||
-    lower.startsWith("summarize") ||
-    lower.includes("how much")
+    /\b(?:what did i spend|how much did i spend|how much have i spent|what have i spent)\b/.test(lower) ||
+    /\b(?:summarise|summarize|summary)\b/.test(lower) ||
+    /\b(?:spending|transactions) (?:for |in )?this month\b/.test(lower)
   );
 }
 
@@ -125,7 +144,7 @@ function determineActivityType(text: string): ActivityType | null {
   const lower = text.toLowerCase();
 
   const unsupportedKeywords = [
-    "borrow", "lend", "loan", "repay", "refund", "owes", "owing",
+    "borrow", "lend", "loan", "repay", "refund", "owes", "owing", "back",
   ];
   if (containsAny(lower, unsupportedKeywords)) {
     return null;
@@ -138,8 +157,8 @@ function determineActivityType(text: string): ActivityType | null {
   return null;
 }
 
-function determineDate(text: string): string {
-  const today = new Date();
+function determineDate(text: string, timeZone: string): string {
+  const today = dateInTimeZone(new Date(), timeZone);
   const lower = text.toLowerCase();
 
   const iso = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
@@ -152,13 +171,33 @@ function determineDate(text: string): string {
     if (isValidDate(year, month, day)) return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   }
 
-  if (lower.includes("yesterday")) {
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    return formatDate(yesterday);
+  const months: Record<string, number> = {
+    jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
+    may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8,
+    sep: 9, sept: 9, september: 9, oct: 10, october: 10, nov: 11, november: 11,
+    dec: 12, december: 12,
+  };
+  const monthPattern = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+  const dayFirst = text.match(new RegExp(`(\\d{1,2})(?:st|nd|rd|th)?\\s+(${monthPattern})(?:,?\\s+(\\d{4}))?`, "i"));
+  const monthFirst = text.match(new RegExp(`(${monthPattern})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?`, "i"));
+  if (dayFirst && months[dayFirst[2].toLowerCase()]) {
+    const year = Number(dayFirst[3] || today.slice(0, 4));
+    const month = months[dayFirst[2].toLowerCase()];
+    const day = Number(dayFirst[1]);
+    if (isValidDate(year, month, day)) return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+  if (monthFirst && months[monthFirst[1].toLowerCase()]) {
+    const year = Number(monthFirst[3] || today.slice(0, 4));
+    const month = months[monthFirst[1].toLowerCase()];
+    const day = Number(monthFirst[2]);
+    if (isValidDate(year, month, day)) return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   }
 
-  return formatDate(today);
+  if (lower.includes("yesterday")) {
+    return addDays(today, -1);
+  }
+
+  return today;
 }
 
 function isValidDate(year: number, month: number, day: number): boolean {
@@ -166,14 +205,21 @@ function isValidDate(year: number, month: number, day: number): boolean {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
-function formatDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function dateInTimeZone(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
-export function parseMessage(text: string): ParsedMessage {
+function addDays(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+export function parseMessage(text: string, defaultCurrency = "UGX", timeZone = "Africa/Kampala"): ParsedMessage {
   const trimmed = text.trim();
 
   if (isOnboarding(trimmed)) {
@@ -194,18 +240,35 @@ export function parseMessage(text: string): ParsedMessage {
   if (isSummary(trimmed)) {
     const lower = trimmed.toLowerCase();
     if (/\btoday\b/.test(lower)) {
-      const today = formatDate(new Date());
+      const today = dateInTimeZone(new Date(), timeZone);
       return { type: "SUMMARY", period: "custom", start_date: today, end_date: today };
     }
+    if (/\byesterday\b/.test(lower)) {
+      const yesterday = addDays(dateInTimeZone(new Date(), timeZone), -1);
+      return { type: "SUMMARY", period: "custom", start_date: yesterday, end_date: yesterday };
+    }
+    if (/\blast week\b/.test(lower)) {
+      const today = dateInTimeZone(new Date(), timeZone);
+      const weekday = new Date(`${today}T00:00:00Z`).getUTCDay();
+      const thisMondayOffset = weekday === 0 ? -6 : 1 - weekday;
+      const thisMonday = addDays(today, thisMondayOffset);
+      return {
+        type: "SUMMARY",
+        period: "custom",
+        start_date: addDays(thisMonday, -7),
+        end_date: addDays(thisMonday, -1),
+      };
+    }
     if (lower.includes("this month")) {
-      const now = new Date();
-      const start = new Date(now.getFullYear(), now.getMonth(), 1);
-      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const today = dateInTimeZone(new Date(), timeZone);
+      const [year, month] = today.split("-").map(Number);
+      const start = `${year}-${String(month).padStart(2, "0")}-01`;
+      const end = `${year}-${String(month).padStart(2, "0")}-${String(new Date(Date.UTC(year, month, 0)).getUTCDate()).padStart(2, "0")}`;
       return {
         type: "SUMMARY",
         period: "this_month",
-        start_date: formatDate(start),
-        end_date: formatDate(end),
+        start_date: start,
+        end_date: end,
       };
     }
     return {
@@ -214,18 +277,35 @@ export function parseMessage(text: string): ParsedMessage {
     };
   }
 
+  const lower = trimmed.toLowerCase();
+  const unsafeForDeterministicWrite =
+    /\?/.test(trimmed) ||
+    /\b(?:might|may|maybe|plan(?:ning)? to|going to|will|would|could|should|need to|want to|if i|suppose|imagine|hypothetically|did not|didn't|never|nothing|no purchase)\b/.test(lower) ||
+    /[\"'“”‘’].+[\"'“”‘’]/.test(trimmed) ||
+    /\blast week\b/.test(lower);
+  if (unsafeForDeterministicWrite) {
+    return { type: "AMBIGUOUS", question: "" };
+  }
+
   const activityType = determineActivityType(trimmed);
   if (activityType === null) {
-    const lower = trimmed.toLowerCase();
-    const unsupportedKeywords = [
-      "borrow", "lend", "loan", "repay", "refund", "owes", "owing",
-    ];
-    if (containsAny(lower, unsupportedKeywords)) {
-      return {
-        type: "UNSUPPORTED",
-        reason:
-          "That sounds like borrowing, lending, a loan, or a refund. FD does not yet support those categories.",
-      };
+    const amount = extractAmount(trimmed);
+    if (amount && amount !== "multiple") {
+      const currency = extractCurrency(trimmed, defaultCurrency);
+      const description = extractDescription(stripDateExpressions(trimmed), amount.sourceText, currency);
+      if (description && description !== "Unnamed transaction") {
+        const pendingTransaction = {
+          amount: String(amount.amount),
+          currency,
+          description,
+          activity_date: determineDate(trimmed, timeZone),
+        };
+        return {
+          type: "AMBIGUOUS",
+          question: `Was the ${currency} ${amount.amount.toLocaleString("en-US")} for ${description} an expense, money you received, or something else?`,
+          pendingTransaction,
+        };
+      }
     }
     return {
       type: "AMBIGUOUS",
@@ -247,8 +327,12 @@ export function parseMessage(text: string): ParsedMessage {
     };
   }
 
-  const currency = extractCurrency(trimmed);
-  const dateRemoved = trimmed.replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, " ");
+  if (activityType === "TRANSFER") {
+    return { type: "UNSUPPORTED", reason: "Transfers between your own accounts are not supported yet." };
+  }
+
+  const currency = extractCurrency(trimmed, defaultCurrency);
+  const dateRemoved = stripDateExpressions(trimmed);
   const description = extractDescription(dateRemoved, amount.sourceText, currency);
 
   if (!description || description === "Unnamed transaction") {
@@ -264,6 +348,6 @@ export function parseMessage(text: string): ParsedMessage {
     amount: amount.amount,
     currency,
     description,
-    activity_date: determineDate(trimmed),
+    activity_date: determineDate(trimmed, timeZone),
   };
 }
