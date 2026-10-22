@@ -4,9 +4,9 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
-from .models import Transaction, UserProfile
+from .models import ProcessedMessage, Transaction, UserProfile
 from .services import calculate_user_summary
 
 
@@ -270,6 +270,7 @@ class UserProfileTests(TestCase):
                     phone_number="+256700123456",
                 )
 
+
     def test_phone_number_is_not_primary_key(self):
         profile = UserProfile.objects.create(
             user=self.user,
@@ -368,6 +369,89 @@ class UserProfileTests(TestCase):
                     user=self.user,
                     phone_number="+256700999999",
                 )
+
+
+@override_settings(DJANGO_SERVICE_KEY="test-service-key")
+class WhatsAppOnboardingAPITests(TestCase):
+    endpoint = "/api/v1/onboarding/"
+
+    def post_profile(self, phone="256700123456", name="Sam", service_key="test-service-key"):
+        return self.client.post(
+            self.endpoint,
+            {"phone_number": phone, "preferred_name": name},
+            content_type="application/json",
+            HTTP_X_SERVICE_KEY=service_key,
+        )
+
+    def test_onboarding_creates_user_and_phone_profile(self):
+        response = self.post_profile()
+        self.assertEqual(response.status_code, 201)
+        profile = UserProfile.objects.get(phone_number="+256700123456")
+        self.assertEqual(profile.preferred_name, "Sam")
+        self.assertFalse(profile.user.has_usable_password())
+
+    def test_onboarding_updates_existing_profile_idempotently(self):
+        self.post_profile()
+        response = self.post_profile(name="Samantha")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(UserProfile.objects.filter(phone_number="+256700123456").count(), 1)
+        self.assertEqual(UserProfile.objects.get(phone_number="+256700123456").preferred_name, "Samantha")
+
+    def test_onboarding_requires_service_key_and_valid_fields(self):
+        self.assertEqual(self.post_profile(service_key="wrong").status_code, 403)
+        self.assertEqual(self.post_profile(phone="not-a-phone").status_code, 400)
+        self.assertEqual(self.post_profile(name=" ").status_code, 400)
+
+
+@override_settings(DJANGO_SERVICE_KEY="test-service-key")
+class WhatsAppTransactionIdempotencyTests(TestCase):
+    endpoint = "/api/v1/transactions/"
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="wa_user", password=None)
+        self.profile = UserProfile.objects.create(user=self.user, phone_number="+256700123456")
+
+    def post_transaction(self, message_id="message-id-1", phone="256700123456", payload=None):
+        body = payload or {
+            "description": "Lunch",
+            "activity_type": "EXPENSE",
+            "amount": "15000.00",
+            "currency": "UGX",
+            "activity_date": "2026-10-21",
+        }
+        return self.client.post(
+            self.endpoint,
+            body,
+            content_type="application/json",
+            HTTP_X_SERVICE_KEY="test-service-key",
+            HTTP_X_WHATSAPP_PHONE=phone,
+            HTTP_X_WHATSAPP_MESSAGE_ID=message_id,
+        )
+
+    def test_redelivered_message_returns_saved_transaction_without_duplicate(self):
+        first = self.post_transaction()
+        second = self.post_transaction()
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data["id"], second.data["id"])
+        self.assertEqual(Transaction.objects.filter(owner=self.user).count(), 1)
+        self.assertEqual(ProcessedMessage.objects.get(message_id="message-id-1").transaction_id, first.data["id"])
+
+    def test_failed_validation_does_not_consume_message_id(self):
+        invalid = self.post_transaction(payload={"description": "Missing fields"})
+        valid = self.post_transaction()
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(valid.status_code, 201)
+        self.assertEqual(Transaction.objects.filter(owner=self.user).count(), 1)
+
+    def test_message_id_cannot_reveal_another_users_transaction(self):
+        first = self.post_transaction()
+        other_user = get_user_model().objects.create_user(username="wa_other", password=None)
+        UserProfile.objects.create(user=other_user, phone_number="+256700999999")
+        replay = self.post_transaction(phone="256700999999")
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(replay.status_code, 409)
+        self.assertEqual(Transaction.objects.count(), 1)
 
 
 class FinancialSummaryServiceTests(TestCase):

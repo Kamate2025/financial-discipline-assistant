@@ -144,6 +144,13 @@ class ProcessedMessage(models.Model):
     """
 
     message_id = models.CharField(max_length=255, unique=True)
+    transaction = models.OneToOneField(
+        Transaction,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="processed_message",
+    )
     processed_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

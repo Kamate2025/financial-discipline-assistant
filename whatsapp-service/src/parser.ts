@@ -1,4 +1,4 @@
-export type ActivityType = "INCOME" | "EXPENSE" | "TRANSFER";
+﻿export type ActivityType = "INCOME" | "EXPENSE" | "TRANSFER";
 
 export interface ParsedTransaction {
   type: "TRANSACTION";
@@ -59,13 +59,16 @@ function containsAny(text: string, keywords: string[]): boolean {
   return keywords.some((k) => text.includes(k));
 }
 
-function extractAmount(text: string): number | null {
-  const match = text.match(/(\d[\d,\s]*(?:\.\d{1,2})?)/);
+function extractAmount(text: string): { amount: number; sourceText: string } | "multiple" | null {
+  const withoutDate = text.replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, " ");
+  const matches = [...withoutDate.matchAll(/\b\d+(?:(?:,|\s)\d{3})*(?:\.\d{1,2})?\b/g)];
+  if (matches.length > 1) return "multiple";
+  const match = matches[0];
   if (!match) return null;
-  const raw = match[1].replace(/[,\s]/g, "");
-  const value = parseFloat(raw);
-  return isNaN(value) || value <= 0 ? null : value;
+  const value = Number(match[0].replace(/[ ,]/g, ""));
+  return !Number.isFinite(value) || value <= 0 ? null : { amount: value, sourceText: match[0] };
 }
+
 
 function extractCurrency(text: string): string {
   const match = text.match(/\b(UGX|USD|KES|EUR|GBP)\b/i);
@@ -74,10 +77,11 @@ function extractCurrency(text: string): string {
 
 function extractDescription(text: string, amountStr: string, currency: string): string {
   let desc = text;
-  desc = desc.replace(new RegExp(amountStr.replace(/,/g, "\\,"), "g"), " ");
+  const escapedAmount = amountStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  desc = desc.replace(new RegExp(escapedAmount, "g"), " ");
   desc = desc.replace(new RegExp(`\\b${currency}\\b`, "gi"), " ");
   desc = desc.replace(/\b(i spent|i paid|i bought|spent|paid|bought|received|income|earned|transferred|transfer|from|for|on|today|yesterday)\b/gi, " ");
-  desc = desc.replace(/\s+/g, " ").trim();
+  desc = desc.replace(/\s+/g, " ").replace(/^[\s:,-]+|[\s:,-]+$/g, "").trim();
   return desc || "Unnamed transaction";
 }
 
@@ -95,6 +99,8 @@ function isSummary(text: string): boolean {
   const lower = text.trim().toLowerCase();
   return (
     lower === "summary" ||
+    /^(?:show|give|send|display) (?:me )?(?:my )?(?:spending )?summary\??$/.test(lower) ||
+    /^(?:what did i spend|how much did i spend|what have i spent)(?: on)? (?:today|yesterday)\??$/.test(lower) ||
     lower.startsWith("summarise") ||
     lower.startsWith("summarize") ||
     lower.includes("how much")
@@ -136,6 +142,16 @@ function determineDate(text: string): string {
   const today = new Date();
   const lower = text.toLowerCase();
 
+  const iso = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (iso && isValidDate(Number(iso[1]), Number(iso[2]), Number(iso[3]))) return iso[0];
+  const local = text.match(/\b(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})\b/);
+  if (local) {
+    const year = Number(local[3]) < 100 ? 2000 + Number(local[3]) : Number(local[3]);
+    const day = Number(local[1]);
+    const month = Number(local[2]);
+    if (isValidDate(year, month, day)) return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+
   if (lower.includes("yesterday")) {
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
@@ -143,6 +159,11 @@ function determineDate(text: string): string {
   }
 
   return formatDate(today);
+}
+
+function isValidDate(year: number, month: number, day: number): boolean {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 function formatDate(d: Date): string {
@@ -172,6 +193,10 @@ export function parseMessage(text: string): ParsedMessage {
 
   if (isSummary(trimmed)) {
     const lower = trimmed.toLowerCase();
+    if (/\btoday\b/.test(lower)) {
+      const today = formatDate(new Date());
+      return { type: "SUMMARY", period: "custom", start_date: today, end_date: today };
+    }
     if (lower.includes("this month")) {
       const now = new Date();
       const start = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -209,6 +234,12 @@ export function parseMessage(text: string): ParsedMessage {
   }
 
   const amount = extractAmount(trimmed);
+  if (amount === "multiple") {
+    return {
+      type: "AMBIGUOUS",
+      question: "I found more than one amount. Please send one transaction at a time, with a separate amount for each.",
+    };
+  }
   if (amount === null) {
     return {
       type: "AMBIGUOUS",
@@ -217,7 +248,8 @@ export function parseMessage(text: string): ParsedMessage {
   }
 
   const currency = extractCurrency(trimmed);
-  const description = extractDescription(trimmed, String(amount), currency);
+  const dateRemoved = trimmed.replace(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b/g, " ");
+  const description = extractDescription(dateRemoved, amount.sourceText, currency);
 
   if (!description || description === "Unnamed transaction") {
     return {
@@ -229,7 +261,7 @@ export function parseMessage(text: string): ParsedMessage {
   return {
     type: "TRANSACTION",
     activity_type: activityType,
-    amount,
+    amount: amount.amount,
     currency,
     description,
     activity_date: determineDate(trimmed),

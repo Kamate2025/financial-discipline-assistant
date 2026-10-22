@@ -14,5 +14,13 @@ test('loadServiceConfig resolves the project-root env values', () => {
 });
 
 test('renderQrCode prints a terminal QR without throwing', () => {
-  assert.doesNotThrow(() => renderQrCode('test-qr-string'));
+  const originalLog = console.log;
+  const output = [];
+  console.log = (...parts) => output.push(parts.join(' '));
+  try {
+    assert.doesNotThrow(() => renderQrCode('test-qr-string'));
+  } finally {
+    console.log = originalLog;
+  }
+  assert.match(output.join('\n'), /WhatsApp Pairing QR Code/);
 });

@@ -22,6 +22,10 @@ export interface DjangoTransaction {
   updated_at: string;
 }
 
+export function isUnknownWhatsAppPhoneResponse(status: unknown, detail: unknown): boolean {
+  return (status === 401 || status === 403) && detail === "Unknown WhatsApp phone number.";
+}
+
 export class DjangoApiClient {
   private readonly client: AxiosInstance;
 
@@ -47,7 +51,8 @@ export class DjangoApiClient {
   /**
    * Resolve a WhatsApp phone number to a Django user by calling the
    * transactions list endpoint. If the phone number is unknown, the
-   * service key authentication will fail with 401.
+   * service key authentication may report the backend's unknown-phone detail
+   * with either 401 or 403, depending on Django authentication negotiation.
    */
   async resolvePhone(phoneNumber: string): Promise<boolean> {
     try {
@@ -56,11 +61,22 @@ export class DjangoApiClient {
       });
       return true;
     } catch (error: any) {
-      if (error.response?.status === 401 || error.response?.status === 403) {
+      // Only the exact allowlisted detail means the number is unregistered.
+      // A generic 401/403 (including invalid service credentials) must still
+      // fail closed and must never trigger onboarding.
+      if (isUnknownWhatsAppPhoneResponse(error.response?.status, error.response?.data?.detail)) {
         return false;
       }
       throw error;
     }
+  }
+
+  async saveWhatsAppProfile(phoneNumber: string, preferredName: string): Promise<{ created: boolean }> {
+    const response = await this.client.post("/api/v1/onboarding/", {
+      phone_number: phoneNumber,
+      preferred_name: preferredName,
+    });
+    return response.data;
   }
 
   async recordTransaction(phoneNumber: string, payload: {
@@ -69,11 +85,16 @@ export class DjangoApiClient {
     amount: string;
     currency: string;
     activity_date: string;
-  }): Promise<DjangoTransaction> {
+  }, messageId?: string): Promise<DjangoTransaction> {
     const response = await this.client.post(
       "/api/v1/transactions/",
       payload,
-      { headers: { "X-WhatsApp-Phone": phoneNumber } }
+      {
+        headers: {
+          "X-WhatsApp-Phone": phoneNumber,
+          ...(messageId ? { "X-WhatsApp-Message-ID": messageId } : {}),
+        },
+      }
     );
     return response.data;
   }

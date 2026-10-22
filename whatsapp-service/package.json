@@ -8,6 +8,8 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "typecheck": "tsc --noEmit",
+    "gemini:models": "npm run build && node dist/gemini.js --list-models",
+    "gemini:test": "npm run build && node dist/gemini.js --test",
     "test": "npm run build && node --test test/*.test.js"
   },
   "keywords": [

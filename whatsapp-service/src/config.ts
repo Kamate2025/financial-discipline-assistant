@@ -32,6 +32,11 @@ export interface ServiceConfig {
   serviceKey: string;
 }
 
+export interface GeminiConfig {
+  apiKey: string;
+  model: string;
+}
+
 export function loadServiceConfig(): ServiceConfig {
   loadRootEnvFile();
 
@@ -50,6 +55,30 @@ export function loadServiceConfig(): ServiceConfig {
     backendBaseUrl,
     serviceKey,
   };
+}
+
+export function getGeminiConfigStatus(): { configured: boolean; model: string | null } {
+  loadRootEnvFile();
+  const apiKey = (process.env.GEMINI_API_KEY || "").trim();
+  const model = (process.env.GEMINI_MODEL || "").trim();
+  return { configured: Boolean(apiKey && model), model: model || null };
+}
+
+export function loadGeminiConfig(env: NodeJS.ProcessEnv = process.env): GeminiConfig {
+  if (env === process.env) loadRootEnvFile();
+  const apiKey = (env.GEMINI_API_KEY || "").trim();
+  const model = (env.GEMINI_MODEL || "").trim().replace(/^models\//, "");
+
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is missing. Set it in the project-root .env or process environment.");
+  }
+  if (!model) {
+    throw new Error("GEMINI_MODEL is missing. Set it to an available generateContent model.");
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(model)) {
+    throw new Error("GEMINI_MODEL contains unsupported characters.");
+  }
+  return { apiKey, model };
 }
 
 export function getProjectRoot(): string {

@@ -2,7 +2,7 @@ from django.urls import path
 
 from .health_views import HealthView
 from .summary_views import UserSummaryView
-from .views import TransactionListCreateView, TransactionRetrieveUpdateDestroyView
+from .views import TransactionListCreateView, TransactionRetrieveUpdateDestroyView, WhatsAppOnboardingView
 
 urlpatterns = [
     path(
@@ -24,5 +24,10 @@ urlpatterns = [
         "health/",
         HealthView.as_view(),
         name="health",
+    ),
+    path(
+        "onboarding/",
+        WhatsAppOnboardingView.as_view(),
+        name="whatsapp-onboarding",
     ),
 ]
