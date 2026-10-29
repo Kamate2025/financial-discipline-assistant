@@ -27,6 +27,18 @@ test('an explicitly supplied three-letter currency is preserved', () => {
   assert.equal(parsed.currency, 'KES');
 });
 
+test('an explicit record command infers an expense and keeps its purpose', () => {
+  const parsed = parseMessage('Record 5000 for travel');
+  assert.equal(parsed.type, 'TRANSACTION');
+  assert.equal(parsed.activity_type, 'EXPENSE');
+  assert.equal(parsed.amount, 5000);
+  assert.equal(parsed.description, 'travel');
+});
+
+test('change my name to is parsed as a deterministic profile update', () => {
+  assert.deepEqual(parseMessage('Change my name to Samuel'), { type: 'NAME_UPDATE', name: 'Samuel' });
+});
+
 test('a today summary uses the current date for both query bounds', () => {
   const today = new Date();
   const date = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;

@@ -1,20 +1,20 @@
-# FD — Financial Discipline
+# FinTrack — Personal finance assistant
 
 ## Overview
 
-FD is a personal finance assistant built for people who want a simple way to understand where their money goes. The product is centered on a conversational workflow and is designed to work with WhatsApp as the primary user experience. The product slogan is “Always know where your money goes.”
+FinTrack is a personal finance assistant designed to help people understand where their money goes, record what matters, and review summaries without friction. It is built around a WhatsApp-first conversational workflow and is designed by Kamate Group Ltd.
 
 ## Product purpose
 
-The project supports a practical personal finance workflow in which a user can record income, expenses, and transfers through a conversational interface, then ask for a summary over a date range. It is intended to be a lightweight, trustworthy, and privacy-aware application for everyday financial tracking.
+The project supports a practical personal finance workflow in which a user can record income, expenses, refunds, loans, gifts, asset sales, and transfers through a conversational interface, then ask for a summary over a date range. It is intended to be a lightweight, trustworthy, and privacy-aware application for everyday financial tracking.
 
 ## Architecture
 
-FD is built as a Django backend with a SQLite database for local development and a separate Node.js and TypeScript WhatsApp service. The backend handles user identity, authentication, transaction storage, and summary calculations. The WhatsApp service reads the project-root environment configuration, authenticates to Django with a shared service key, and sends messages to the user while validating sender identity through the normalized WhatsApp phone number.
+FinTrack is built as a Django backend with a SQLite database for local development and a separate Node.js and TypeScript WhatsApp service. The backend handles user identity, authentication, transaction storage, and summary calculations. The WhatsApp service reads the project-root environment configuration, authenticates to Django with a shared service key, and sends messages to the user while validating sender identity through the normalized WhatsApp phone number.
 
 ## Project structure
 
-The application is organized around a small root project with a Django app named transactions and a WhatsApp service directory. The root contains the Django project configuration, the database, the environment files, and the documentation. The WhatsApp service contains the Baileys client, message parser, handlers, and API client.
+The application is organized around a small root project with a Django app named transactions and a WhatsApp service directory. The root contains the Django project configuration, database, environment files, and documentation. The WhatsApp service contains the Baileys client, message parser, handlers, and API client.
 
 ## Environment and configuration
 
@@ -38,17 +38,11 @@ This keeps ownership checks on the server instead of trusting the client. The se
 
 ## User onboarding
 
-A first-time WhatsApp user can begin by sending a greeting such as hello. The service introduces itself as FD, explains the product and slogan, and asks for the user’s preferred name. Once a name is received, the system saves the preferred name and associates it with the normalized WhatsApp number. Returning users are recognized by their phone number and greeted appropriately.
+A first-time WhatsApp user can begin by sending a greeting such as hello. The service introduces itself as FinTrack, explains the product and purpose, and asks for the user’s preferred name. Once a name is received, the system saves the preferred name and associates it with the normalized WhatsApp number. Returning users are recognized by their phone number and greeted appropriately.
 
 ## Supported transaction flows
 
-The system supports three main categories of financial records:
-
-- Income, such as salary or earnings from work.
-- Expenses, such as food, transport, or utilities.
-- Transfers, such as a move between accounts.
-
-Messages that look like borrowing, lending, loan repayment, or refunds are intentionally not silently classified as ordinary income or expense because the current data model does not represent those categories safely. In such cases, the service asks for clarification instead of guessing.
+The system supports several categories of financial records, including income, expenses, refunds, loans, gifts, and asset sales. The supported categories are intentionally conservative: unrecognized or ambiguous activity is clarified rather than guessed.
 
 ## Summary behavior
 
@@ -93,8 +87,6 @@ The final repository state was verified by running the actual Django test suite 
 
 ## Security and limitations
 
-The current implementation is a strong Version 1 foundation, but it is still intentionally limited. It does not include production database configuration, advanced reporting, queue processing, or support for borrowing, lending, or refund categories. The architecture prioritizes correctness, ownership protection, and clear boundaries between the service and user data rather than adding unnecessary infrastructure.
+The current implementation is intentionally conservative about financial advice and automation. It stores only the records the user explicitly chooses to send and keeps user ownership checks on the server.
 
-## Status
-
-FD is implemented as a working local-version application with a secure backend, authenticated WhatsApp integration pattern, user onboarding flow, transaction recording, summary reporting, and verified tests. The project is prepared for local testing and further product iteration, with the root configuration kept in a single, secure location and the documentation aligned to the actual codebase.
+FinTrack is implemented as a working local-version application with a secure backend, authenticated WhatsApp integration pattern, user onboarding flow, transaction recording, summary reporting, and verified tests. The project is prepared for local testing and further product iteration, with the root configuration kept in a single, secure location and the documentation aligned to the actual codebase.

@@ -32,7 +32,7 @@ export interface ServiceConfig {
   serviceKey: string;
 }
 
-export interface GeminiConfig {
+export interface GroqConfig {
   apiKey: string;
   model: string;
 }
@@ -57,26 +57,26 @@ export function loadServiceConfig(): ServiceConfig {
   };
 }
 
-export function getGeminiConfigStatus(): { configured: boolean; model: string | null } {
+export function getGroqConfigStatus(): { configured: boolean; model: string | null } {
   loadRootEnvFile();
-  const apiKey = (process.env.GEMINI_API_KEY || "").trim();
-  const model = (process.env.GEMINI_MODEL || "").trim();
+  const apiKey = (process.env.GROQ_API_KEY || "").trim();
+  const model = (process.env.GROQ_MODEL || "").trim();
   return { configured: Boolean(apiKey && model), model: model || null };
 }
 
-export function loadGeminiConfig(env: NodeJS.ProcessEnv = process.env): GeminiConfig {
+export function loadGroqConfig(env: NodeJS.ProcessEnv = process.env): GroqConfig {
   if (env === process.env) loadRootEnvFile();
-  const apiKey = (env.GEMINI_API_KEY || "").trim();
-  const model = (env.GEMINI_MODEL || "").trim().replace(/^models\//, "");
+  const apiKey = (env.GROQ_API_KEY || "").trim();
+  const model = (env.GROQ_MODEL || "openai/gpt-oss-20b").trim();
 
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY is missing. Set it in the project-root .env or process environment.");
+    throw new Error("GROQ_API_KEY is missing. Set it in the project-root .env or process environment.");
   }
   if (!model) {
-    throw new Error("GEMINI_MODEL is missing. Set it to an available generateContent model.");
+    throw new Error("GROQ_MODEL is missing. Set it to an available Groq model.");
   }
-  if (!/^[A-Za-z0-9._-]+$/.test(model)) {
-    throw new Error("GEMINI_MODEL contains unsupported characters.");
+  if (!/^[A-Za-z0-9._/-]+$/.test(model)) {
+    throw new Error("GROQ_MODEL contains unsupported characters.");
   }
   return { apiKey, model };
 }

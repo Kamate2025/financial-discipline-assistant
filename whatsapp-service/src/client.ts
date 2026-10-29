@@ -288,7 +288,7 @@ export async function processMessageUpsert(
           try {
             await onMessage(sender.phoneJid, text, messageId, sender.replyJid);
           } finally {
-            console.info(`[${new Date().toISOString()}] [Baileys][${correlation}] FD dispatch completed in ${Date.now() - dispatchStartedAt}ms.`);
+            console.info(`[${new Date().toISOString()}] [Baileys][${correlation}] FinTrack dispatch completed in ${Date.now() - dispatchStartedAt}ms.`);
           }
         }
         catch (error: unknown) {

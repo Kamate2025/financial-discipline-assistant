@@ -1,7 +1,7 @@
 import { parseMessage, ParsedMessage } from "./parser";
 import { DjangoApiClient, isUnknownWhatsAppPhoneResponse, OnboardingStatus } from "./api";
 import { loadServiceConfig } from "./config";
-import { GeminiError, Interpretation, interpretMessage } from "./gemini";
+import { LanguageModelError, Interpretation, interpretMessage } from "./groq";
 
 const { backendBaseUrl: BASE_URL, serviceKey: SERVICE_KEY } = loadServiceConfig();
 
@@ -38,7 +38,7 @@ function correlationId(messageId: string): string {
 }
 
 function trace(messageId: string, stage: string, detail = ""): void {
-  console.info(`[FD][${correlationId(messageId)}] ${stage}${detail ? `: ${detail}` : ""}`);
+  console.info(`[FinTrack][${correlationId(messageId)}] ${stage}${detail ? `: ${detail}` : ""}`);
 }
 
 function isAcknowledgement(text: string): boolean {
@@ -64,11 +64,11 @@ function isUnknownPhone(error: any): boolean {
 export { onboardingState, processedMessages, registeredPhones, profileStatusCache, api, formatCurrency };
 
 async function sendMenu(phone: string, send: (to: string, text: string) => Promise<void>): Promise<void> {
-  await send(phone, "FD menu (text options):\n1. Today's summary — ‘summary today’\n2. This month's summary — ‘summary this month’\n3. Record a transaction — ‘I spent 15k on lunch’\n4. Spending insights — ‘where does most of my money go?’\n5. Help — ‘help me use FD’\n\nYou can also ask in your own words. Reply with a request; these are not clickable buttons.");
+  await send(phone, "FinTrack menu (text options):\n1. Today's summary — ‘summary today’\n2. This month's summary — ‘summary this month’\n3. Record a transaction — ‘I spent 15k on lunch’\n4. Spending insights — ‘where does most of my money go?’\n5. Help — ‘help me use FinTrack’\n\nYou can also ask in your own words. Reply with a request; these are not clickable buttons.");
 }
 
 function privacyMessage(): string {
-  return "FD stores the transaction details you choose to send (such as descriptions, amounts, currencies, and dates) so it can show your own summaries and insights. FD does not read bank or mobile money accounts. Ask ‘show my menu’ or ‘show my summary’ to review your records. To permanently delete your FD account and saved records, say ‘delete my FD account’; FD will ask you to confirm. You can ask for human help at https://wa.me/256787360381.";
+  return "FinTrack stores the transaction details you choose to send (such as descriptions, amounts, currencies, and dates) so it can show your own summaries and insights. FinTrack does not read bank or mobile money accounts. Ask ‘show my menu’ or ‘show my summary’ to review your records. To permanently delete your FinTrack account and saved records, say ‘delete my FinTrack account’; FinTrack will ask you to confirm. You can ask for human help at https://wa.me/256787360381.";
 }
 
 function supportMessage(): string {
@@ -88,7 +88,7 @@ export async function handleOnboarding(
   sendMessage: (to: string, text: string) => Promise<void>
 ): Promise<void> {
   try {
-    console.info("[FD] Onboarding profile lookup started.");
+    console.info("[FinTrack] Onboarding profile lookup started.");
     const profile = await getOnboardingStatus(phoneNumber);
     if (profile.registered && profile.needs_name) {
       registeredPhones.add(phoneNumber);
@@ -103,21 +103,21 @@ export async function handleOnboarding(
     }
     if (profile.registered) {
       registeredPhones.add(phoneNumber);
-      console.info("[FD] Onboarding profile found; welcome branch selected.");
+      console.info("[FinTrack] Onboarding profile found; welcome branch selected.");
       await sendMessage(phoneNumber, `Welcome back${profile.preferred_name ? `, ${profile.preferred_name}` : ""}! How can I help you today?`);
       return;
     }
 
     onboardingState.add(phoneNumber);
-    console.info("[FD] No profile found; awaiting preferred name.");
+    console.info("[FinTrack] No profile found; awaiting preferred name.");
     await sendMessage(
       phoneNumber,
-      "Welcome to FD, your personal finance assistant by Kamate Group Ltd. I help you record personal income and expenses, track what your money was for, and view summaries through WhatsApp.\n\n" +
+      "Welcome to FinTrack, your personal finance assistant by Kamate Group Ltd. I help you record personal income and expenses, track what your money was for, and view summaries through WhatsApp.\n\n" +
       "For example: ‘I spent 15,000 UGX on lunch today’ or ‘Show my summary for this month.’\n\n" +
       "Say ‘show my menu’ any time to see your options. What's your name, or what should I call you?"
     );
   } catch (error: any) {
-    console.error(`[FD] Onboarding lookup failed (HTTP ${apiStatus(error) || "network"}); details omitted.`);
+    console.error(`[FinTrack] Onboarding lookup failed (HTTP ${apiStatus(error) || "network"}); details omitted.`);
     await sendMessage(phoneNumber, "Sorry, I'm having trouble connecting. Please try again later.");
   }
 }
@@ -130,7 +130,7 @@ export async function handleNameUpdate(
   try {
     await api.saveWhatsAppProfile(phoneNumber, name);
     profileStatusCache.delete(phoneNumber);
-    console.info("[FD] Onboarding profile saved successfully.");
+    console.info("[FinTrack] Onboarding profile saved successfully.");
     onboardingState.delete(phoneNumber);
     registeredPhones.add(phoneNumber);
     const profile = await getOnboardingStatus(phoneNumber);
@@ -141,7 +141,7 @@ export async function handleNameUpdate(
       await sendMessage(phoneNumber, `Nice to meet you, ${name}! You're all set. Record your first transaction, for example: ‘I spent 15,000 UGX on lunch today.’ Say ‘show my menu’ to see your options.`);
     }
   } catch (error: any) {
-    console.error(`[FD] Profile onboarding failed (HTTP ${apiStatus(error) || "network"}); details omitted.`);
+    console.error(`[FinTrack] Profile onboarding failed (HTTP ${apiStatus(error) || "network"}); details omitted.`);
     await sendMessage(phoneNumber, "Sorry, I couldn't finish setting up your profile. Please try again later.");
   }
 }
@@ -158,7 +158,7 @@ async function promptCountry(
   const choices = countries.map((country, index) =>
     `${index + 1}. ${country.name} (${country.currency_code} — ${country.currency_name})`
   ).join("\n");
-  await sendMessage(phoneNumber, `Which country should I use for your FD account? Reply with its number or name.\n\n${choices}`);
+  await sendMessage(phoneNumber, `Which country should I use for your FinTrack account? Reply with its number or name.\n\n${choices}`);
 }
 
 async function handleCountrySelection(
@@ -182,7 +182,7 @@ async function handleCountrySelection(
     registeredPhones.add(phoneNumber);
     await sendMessage(phoneNumber, `You're all set with ${selected.currency_code}! Record your first transaction, for example: ‘I spent 15,000 ${selected.currency_code} on lunch today.’ Say ‘show my menu’ to see your options.`);
   } catch (error: any) {
-    console.error(`[FD] Country selection failed (HTTP ${apiStatus(error) || "network"}); details omitted.`);
+    console.error(`[FinTrack] Country selection failed (HTTP ${apiStatus(error) || "network"}); details omitted.`);
     await sendMessage(phoneNumber, "Sorry, I couldn't save your country just now. Your name is safe. Please try selecting your country again.");
   }
 }
@@ -211,7 +211,7 @@ export async function handleTransaction(
       onboardingState.add(phoneNumber);
       await sendMessage(phoneNumber, "Your phone number is not registered. Please send 'Hello' to start onboarding.");
     } else if (apiStatus(error) === 401 || apiStatus(error) === 403) {
-      await sendMessage(phoneNumber, "FD couldn't authenticate this request. Please try again later.");
+      await sendMessage(phoneNumber, "FinTrack couldn't authenticate this request. Please try again later.");
     } else if (error.response?.status === 400) {
       await sendMessage(phoneNumber, "I couldn't record that transaction. Please check the details and try again.");
     } else {
@@ -274,7 +274,7 @@ export async function dispatchMessage(
   let preferredName = "";
   let deterministic: ParsedMessage = parseMessage(text, preferredCurrency, timeZone);
 
-  if (/^(hello|hi|hey)(\s+fd)?[!. ]*$/.test(lower) && !registeredPhones.has(phoneNumber)) {
+  if (/^(hello|hi|hey)(\s+fd|\s+fintrack)?[!. ]*$/.test(lower) && !registeredPhones.has(phoneNumber)) {
     trace(messageId, "Greeting branch selected");
     await handleOnboarding(phoneNumber, sendMessage);
     return;
@@ -354,7 +354,7 @@ export async function dispatchMessage(
       return;
     }
   }
-  if (/^(hello|hi|hey)(\s+fd)?[!. ]*$/.test(lower)) {
+  if (/^(hello|hi|hey)(\s+fd|\s+fintrack)?[!. ]*$/.test(lower)) {
     await handleOnboarding(phoneNumber, sendMessage);
     return;
   }
@@ -362,8 +362,13 @@ export async function dispatchMessage(
     await handleNameUpdate(phoneNumber, deterministic.name, sendMessage);
     return;
   }
-  if (/\b(?:who (?:built|made|created) you|who is fd|what is fd|what does fd do)\b/.test(lower)) {
-    await sendMessage(phoneNumber, "FD is a personal finance assistant built by Kamate Group Ltd. It helps you record financial activity and review summaries from your saved records.");
+  if (/\b(?:my )?(?:earning|earnings|income)(?: only)?\b/.test(lower)
+    && /\b(?:this month|for this month|month)\b/.test(lower)) {
+    await handleFinancialQuestion(phoneNumber, financialQuestion("INCOME_BREAKDOWN", "THIS_MONTH"), sendMessage, timeZone);
+    return;
+  }
+  if (/\b(?:who (?:built|made|created) you|who is fintrack|what is fintrack|what does fintrack do|who is fd|what is fd|what does fd do)\b/.test(lower)) {
+    await sendMessage(phoneNumber, "FinTrack is a personal finance assistant built by Kamate Group Ltd. It helps you record financial activity and review summaries from your saved records.");
     return;
   }
   if (/^(?:delete|erase|remove) my (?:fd )?(?:account|data)$/.test(lower)) {
@@ -378,7 +383,7 @@ export async function dispatchMessage(
     if (priorPending?.action_type === "ACCOUNT_DELETE_CONFIRM") {
       await handlePendingAction(phoneNumber, priorPending, text, messageId, sendMessage, preferredCurrency, timeZone);
     } else {
-      await saveAndAsk(phoneNumber, "ACCOUNT_DELETE_CONFIRM", {}, messageId, "This permanently deletes your FD account, profile, and saved financial records. Reply ‘delete my account’ to confirm, or ‘cancel’ to keep your data.", sendMessage);
+      await saveAndAsk(phoneNumber, "ACCOUNT_DELETE_CONFIRM", {}, messageId, "This permanently deletes your FinTrack account, profile, and saved financial records. Reply ‘delete my account’ to confirm, or ‘cancel’ to keep your data.", sendMessage);
     }
     return;
   }
@@ -390,21 +395,22 @@ export async function dispatchMessage(
     await sendMessage(phoneNumber, privacyMessage());
     return;
   }
-  if (/^(?:support|help from a person)$/.test(lower) || /\b(?:human support|contact support|talk to (?:a )?human|customer support|troubleshoot(?:ing)?|technical help)\b/.test(lower)) {
+  if (/^(?:support|help from a person)$/.test(lower) || /\b(?:human support|contact support|talk to (?:a )?human|customer support|troubleshoot(?:ing)?|technical help|not (?:picking|answering) my calls)\b/.test(lower)) {
     await sendMessage(phoneNumber, supportMessage());
     return;
   }
   if (/\b(?:delete|erase|remove) (?:my )?(?:fd )?(?:account|data|records)\b/.test(lower)) {
-    await saveAndAsk(phoneNumber, "ACCOUNT_DELETE_CONFIRM", {}, messageId, "This permanently deletes your FD account, profile, and saved financial records. Reply ‘delete my account’ to confirm, or ‘cancel’ to keep your data.", sendMessage);
+    await saveAndAsk(phoneNumber, "ACCOUNT_DELETE_CONFIRM", {}, messageId, "This permanently deletes your FinTrack account, profile, and saved financial records. Reply ‘delete my account’ to confirm, or ‘cancel’ to keep your data.", sendMessage);
     return;
   }
-  if (/^(help|help me(?: use fd)?|support|instructions|how do i use fd|how to use fd)\??$/.test(lower)) {
+  if (/^(help|help me(?: use (?:fd|fintrack))?|support|instructions|how do i use (?:fd|fintrack)|how to use (?:fd|fintrack))\??$/.test(lower)) {
     trace(messageId, "Help branch selected");
-    await sendMessage(phoneNumber, "To record something that happened, say ‘I spent 15k on lunch’ or ‘I received 500k salary’. Ask ‘summary today’, ‘show my spending this month’, ‘what did I buy on 15 October?’, or ‘where does most of my money go?’ You can correct or delete a record too; FD asks before changing or deleting it. Say ‘show my menu’ for options. For a person, say ‘human support’.");
+    await sendMessage(phoneNumber, "To record something that happened, say ‘I spent 15k on lunch’ or ‘I received 500k salary’. Ask ‘summary today’, ‘show my spending this month’, ‘what did I buy on 15 October?’, or ‘where does most of my money go?’ You can correct or delete a record too; FinTrack asks before changing or deleting it. Say ‘show my menu’ for options. For a person, say ‘human support’." );
     return;
   }
-  if (/^[1-5]$/.test(lower)) {
-    const option = Number(lower);
+  const menuOption = lower.match(/^(?:option\s*)?([1-5])(?:\s+(?:in|from)\s+(?:the\s+)?menu)?[!. ]*$/);
+  if (menuOption) {
+    const option = Number(menuOption[1]);
     if (option === 1) { await handleFinancialQuestion(phoneNumber, financialQuestion("SUMMARY", "TODAY"), sendMessage, timeZone); return; }
     if (option === 2) { await handleFinancialQuestion(phoneNumber, financialQuestion("SUMMARY", "THIS_MONTH"), sendMessage, timeZone); return; }
     if (option === 3) { await sendMessage(phoneNumber, "Tell me what happened, the amount, and what it was for—for example, ‘I spent 15k on lunch today.’"); return; }
@@ -423,6 +429,12 @@ export async function dispatchMessage(
   }
   if (deterministic.type === "UNSUPPORTED") {
     await sendMessage(phoneNumber, deterministic.reason);
+    return;
+  }
+  const hasClearTransactionCommand = /^(?:(?:\d{1,2}[/.]\d{1,2}[/.]\d{2,4}|\d{4}-\d{2}-\d{2})\s+)?(?:i\s+)?(?:spent|paid|bought|received|earned|record)\b/i.test(text.trim());
+  if (deterministic.type === "TRANSACTION" && hasClearTransactionCommand) {
+    trace(messageId, "Deterministic transaction branch selected", deterministic.activity_type);
+    await handleTransaction(phoneNumber, deterministic, messageId, sendMessage);
     return;
   }
 
@@ -447,7 +459,7 @@ export async function dispatchMessage(
     await handlePendingAction(phoneNumber, pending, text, messageId, sendMessage, preferredCurrency, timeZone);
     return;
   }
-  if (pending && ["cancel", "never mind", "nevermind", "nope"].includes(lower)) {
+  if (pending && ["cancel", "never mind", "nevermind", "nope", "ignore it", "ignore that", "stop", "not now"].includes(lower)) {
     await api.clearPendingAction(phoneNumber);
     await sendMessage(phoneNumber, "Cancelled. Nothing was changed.");
     return;
@@ -460,7 +472,7 @@ export async function dispatchMessage(
 
   let interpretation: Interpretation;
   try {
-    trace(messageId, "Gemini request started");
+    trace(messageId, "Language model request started");
     const recentTransactions = /\b(?:she|he|they|that|it|loan|lent|borrow|paid back|repay|correct|change it)\b/i.test(text)
       ? (await api.getTransactions(phoneNumber, "", true)).slice(0, 5).map(({ activity_type, amount, currency, description, activity_date }) => ({ activity_type, amount, currency, description, activity_date }))
       : [];
@@ -471,11 +483,11 @@ export async function dispatchMessage(
       pendingContext: pending ? { action_type: pending.action_type, payload: pending.payload } : undefined,
       recentTransactions,
     });
-    trace(messageId, "Gemini interpretation validated", interpretation.intent);
+    trace(messageId, "Language model interpretation validated", interpretation.intent);
   } catch (error) {
-    const kind = error instanceof GeminiError ? error.kind : "unexpected";
-    const status = error instanceof GeminiError ? error.status : undefined;
-    trace(messageId, "Gemini interpretation failed", `${kind}${status ? ` HTTP ${status}` : ""}`);
+    const kind = error instanceof LanguageModelError ? error.kind : "unexpected";
+    const status = error instanceof LanguageModelError ? error.status : undefined;
+    trace(messageId, "Language model interpretation failed", `${kind}${status ? ` HTTP ${status}` : ""}`);
     if (deterministic.type === "AMBIGUOUS" && deterministic.pendingTransaction) {
       try {
         await api.savePendingAction(phoneNumber, "TRANSACTION", deterministic.pendingTransaction, messageId);
@@ -491,7 +503,7 @@ export async function dispatchMessage(
       return;
     }
     if (kind === "configuration" || kind === "authentication" || kind === "model") {
-      await sendMessage(phoneNumber, "I can't interpret messages right now because the language service is unavailable. Please try again later; FD's administrator may need to check its configuration.");
+      await sendMessage(phoneNumber, "I can't interpret messages right now because the language service is unavailable. Please try again later; FinTrack's administrator may need to check its configuration.");
     } else if (kind === "response") {
       await sendMessage(phoneNumber, "I couldn't safely understand that message. Please rephrase it with what happened, the amount, and what it was for.");
     } else {
@@ -611,7 +623,7 @@ async function handleFinancialQuestion(phone: string, item: Interpretation, send
   let compareStart = item.compareStartDate;
   let compareEnd = item.compareEndDate;
   if (item.intent === "COMPARE_PERIODS" && (!compareStart || !compareEnd)) [compareStart, compareEnd] = previousEquivalentRange(start, end);
-  const insights = ["SUMMARY", "SPENDING_BREAKDOWN", "LARGEST_EXPENSES", "INCOME_VS_EXPENSES", "COMPARE_PERIODS", "SPENDING_TREND", "CATEGORY_TRENDS", "FINANCIAL_INSIGHTS", "TRANSACTION_LOOKUP"].includes(item.intent);
+  const insights = ["SUMMARY", "SPENDING_BREAKDOWN", "LARGEST_EXPENSES", "INCOME_VS_EXPENSES", "INCOME_BREAKDOWN", "COMPARE_PERIODS", "SPENDING_TREND", "CATEGORY_TRENDS", "FINANCIAL_INSIGHTS", "TRANSACTION_LOOKUP"].includes(item.intent);
   if (!insights) { await send(phone, "I couldn't identify the financial question. Try asking for a date, period, category, or description."); return; }
   try {
     const data = await api.getFinancialInsights(phone, {
@@ -623,14 +635,22 @@ async function handleFinancialQuestion(phone: string, item: Interpretation, send
     const intentTitles: Record<string, string> = {
       SUMMARY: "Summary", SPENDING_BREAKDOWN: "Spending by Category", LARGEST_EXPENSES: "Largest Expenses",
       INCOME_VS_EXPENSES: "Income and Expenses", COMPARE_PERIODS: "Period Comparison", SPENDING_TREND: "Spending Trend",
+      INCOME_BREAKDOWN: "Income This Month",
       CATEGORY_TRENDS: "Category Trends", FINANCIAL_INSIGHTS: "Spending Insights", TRANSACTION_LOOKUP: "Matching Transactions",
     };
     const periodLabel = (value: string): string => new Date(`${value}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
     const rangeLabel = start === end ? periodLabel(start) : `${periodLabel(start)} – ${periodLabel(end)}`;
-    const lines = [`*FD | ${intentTitles[item.intent] || "Finance"}*`, `_${rangeLabel}_`, "━━━━━━━━━━━━━━"];
-    if (data.transaction_count === 0) lines.push(`No matching transactions were recorded for ${rangeLabel}.`);
+    const lines = [`*FinTrack | ${intentTitles[item.intent] || "Finance"}*`, `_${rangeLabel}_`, "━━━━━━━━━━━━━━"];
+    if (data.transaction_count === 0 && item.intent !== "INCOME_BREAKDOWN") lines.push(`No matching transactions were recorded for ${rangeLabel}.`);
+    if (item.intent === "INCOME_BREAKDOWN" && !(data.currencies || []).length) lines.push("No earned income was recorded for this period.");
     for (const row of data.currencies || []) {
       lines.push(`*${row.currency}*`);
+      if (item.intent === "INCOME_BREAKDOWN") {
+        lines.push(Number(row.income_total)
+          ? `Earned income recorded: ${formatCurrency(Number(row.income_total), row.currency)}`
+          : "No earned income was recorded for this period.");
+        continue;
+      }
       if (Number(row.income_total)) lines.push(`💰 Income: ${formatCurrency(Number(row.income_total), row.currency)}`);
       if (Number(row.expense_total)) lines.push(`💸 Expenses: ${formatCurrency(Number(row.expense_total), row.currency)}`);
       if (Number(row.refund_total)) lines.push(`↩️ Refunds: ${formatCurrency(Number(row.refund_total), row.currency)}`);
@@ -643,7 +663,7 @@ async function handleFinancialQuestion(phone: string, item: Interpretation, send
       if (["SPENDING_BREAKDOWN", "FINANCIAL_INSIGHTS", "CATEGORY_TRENDS"].includes(item.intent) && row.category_breakdown?.length) {
         lines.push("*Spending by category*");
         for (const category of row.category_breakdown) if (Number(category.expense_total)) lines.push(`• ${category.category}: ${formatCurrency(Number(category.expense_total), row.currency)}`);
-        if (["SPENDING_BREAKDOWN", "FINANCIAL_INSIGHTS"].includes(item.intent)) lines.push(`Your highest recorded expense category is ${row.category_breakdown[0].category} at ${formatCurrency(Number(row.category_breakdown[0].expense_total), row.currency)}. Reviewing those recorded expenses may help you decide where to adjust; FD cannot guarantee savings.`);
+        if (["SPENDING_BREAKDOWN", "FINANCIAL_INSIGHTS"].includes(item.intent)) lines.push(`Your highest recorded expense category is ${row.category_breakdown[0].category} at ${formatCurrency(Number(row.category_breakdown[0].expense_total), row.currency)}. Reviewing those recorded expenses may help you decide where to adjust; FinTrack cannot guarantee savings.`);
       }
       if (item.intent === "INCOME_VS_EXPENSES") {
         const difference = Number(row.expense_total) - Number(row.income_total);
@@ -675,10 +695,10 @@ async function handleFinancialQuestion(phone: string, item: Interpretation, send
         }
       }
     }
-    if (data.transaction_count > 0) lines.push(`_Transactions recorded: ${data.transaction_count}_`, "These figures reflect records saved in FD and may cover only part of the period. Loans received are not earned income; refunds are shown separately and counted once.");
+    if (data.transaction_count > 0) lines.push(`_Transactions recorded: ${data.transaction_count}_`, "These figures reflect records saved in FinTrack and may cover only part of the period. Loans received are not earned income; refunds are shown separately and counted once.");
     await send(phone, lines.join("\n"));
   } catch (error: any) {
-    console.error(`[FD] Financial insight request failed (HTTP ${apiStatus(error) || "network"}); details omitted.`);
+    console.error(`[FinTrack] Financial insight request failed (HTTP ${apiStatus(error) || "network"}); details omitted.`);
     await send(phone, "Sorry, I couldn't retrieve that from your records just now. No figures were estimated. Please try again shortly.");
   }
 }
@@ -693,15 +713,15 @@ async function saveAndAsk(phone: string, type: any, payload: Record<string, any>
 }
 
 async function routeInterpretation(phone: string, item: Interpretation, raw: string, messageId: string, send: (to: string, text: string) => Promise<void>, currency: string, timeZone: string): Promise<void> {
-  if (["SUMMARY", "SPENDING_BREAKDOWN", "LARGEST_EXPENSES", "INCOME_VS_EXPENSES", "COMPARE_PERIODS", "SPENDING_TREND", "CATEGORY_TRENDS", "FINANCIAL_INSIGHTS", "TRANSACTION_LOOKUP"].includes(item.intent)) {
+  if (["SUMMARY", "SPENDING_BREAKDOWN", "LARGEST_EXPENSES", "INCOME_VS_EXPENSES", "INCOME_BREAKDOWN", "COMPARE_PERIODS", "SPENDING_TREND", "CATEGORY_TRENDS", "FINANCIAL_INSIGHTS", "TRANSACTION_LOOKUP"].includes(item.intent)) {
     await handleFinancialQuestion(phone, item, send, timeZone); return;
   }
   if (item.intent === "MENU") { await sendMenu(phone, send); return; }
   if (item.intent === "PRIVACY") { await send(phone, privacyMessage()); return; }
   if (item.intent === "SUPPORT") { await send(phone, supportMessage()); return; }
-  if (item.intent === "ACCOUNT_DELETE") { await saveAndAsk(phone, "ACCOUNT_DELETE_CONFIRM", {}, messageId, "This permanently deletes your FD account, profile, and saved financial records. Reply ‘delete my account’ to confirm, or ‘cancel’ to keep your data.", send); return; }
+  if (item.intent === "ACCOUNT_DELETE") { await saveAndAsk(phone, "ACCOUNT_DELETE_CONFIRM", {}, messageId, "This permanently deletes your FinTrack account, profile, and saved financial records. Reply ‘delete my account’ to confirm, or ‘cancel’ to keep your data.", send); return; }
   if (item.intent === "PROFILE_NAME_QUESTION") { await send(phone, "I couldn't retrieve your saved profile name just now. Please try again shortly."); return; }
-  if (item.intent === "PRODUCT_QUESTION") { await send(phone, "FD is a personal finance assistant built by Kamate Group Ltd. Welcome! I can record income, expenses, gifts, loans, refunds, and asset sales, and show summaries from your saved records."); return; }
+  if (item.intent === "PRODUCT_QUESTION") { await send(phone, "FinTrack is a personal finance assistant built by Kamate Group Ltd. Welcome! I can record income, expenses, gifts, loans, refunds, and asset sales, and show summaries from your saved records."); return; }
   if (item.intent === "MULTI_TRANSACTION") {
     const events = item.transactions;
     if (events.length < 2 || events.some((tx) => tx.statementStatus !== "COMPLETED" || tx.confidence !== "HIGH" || !tx.amount || !tx.description || !tx.transactionType)) {
@@ -763,9 +783,9 @@ async function handlePendingAction(phone: string, pending: any, text: string, me
       registeredPhones.delete(phone);
       profileStatusCache.delete(phone);
       onboardingState.delete(phone);
-      await send(phone, "Your FD account and saved financial records have been deleted.");
+      await send(phone, "Your FinTrack account and saved financial records have been deleted.");
     } catch (error: any) {
-      console.error(`[FD] Account data deletion failed (HTTP ${apiStatus(error) || "network"}); details omitted.`);
+      console.error(`[FinTrack] Account data deletion failed (HTTP ${apiStatus(error) || "network"}); details omitted.`);
       await send(phone, "I couldn't delete your account just now. Your data remains as it was; please contact https://wa.me/256787360381 for help.");
     }
     return;
@@ -802,7 +822,7 @@ async function handlePendingAction(phone: string, pending: any, text: string, me
       await send(phone, `Apply the correction to ${displayTransaction(tx)}? Reply yes to confirm or no to cancel.`); return;
     }
     await send(phone, "Please reply yes to confirm or no to cancel.");
-  } catch (error: any) { console.error(`[FD] Pending action failed (HTTP ${apiStatus(error) || "language service"}).`); await send(phone, "I couldn't safely complete that. Nothing was changed; please try again."); }
+  } catch (error: any) { console.error(`[FinTrack] Pending action failed (HTTP ${apiStatus(error) || "language service"}).`); await send(phone, "I couldn't safely complete that. Nothing was changed; please try again."); }
 }
 
 async function handleParsedMessage(

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const {
   api, dispatchMessage, onboardingState, registeredPhones, profileStatusCache, processedMessages,
 } = require('../dist/handlers.js');
-const gemini = require('../dist/gemini.js');
+const groq = require('../dist/groq.js');
 
 const phone = '256787360381';
 const from = `${phone}@s.whatsapp.net`;
@@ -21,7 +21,7 @@ function expenseInterpretation(amount, description, transactionDate = new Date()
 }
 
 test.beforeEach(() => {
-  originalInterpretMessage = gemini.interpretMessage;
+  originalInterpretMessage = groq.interpretMessage;
   for (const key of ['resolvePhone', 'saveWhatsAppProfile', 'saveWhatsAppCountry', 'getOnboardingStatus', 'getActiveCountries', 'recordTransaction', 'getSummary', 'getFinancialInsights', 'getPendingAction', 'savePendingAction', 'clearPendingAction', 'deleteAccountData']) {
     original[key] = api[key];
   }
@@ -43,7 +43,7 @@ test.beforeEach(() => {
 });
 
 test.afterEach(() => {
-  gemini.interpretMessage = originalInterpretMessage;
+  groq.interpretMessage = originalInterpretMessage;
   for (const [key, value] of Object.entries(original)) api[key] = value;
   onboardingState.clear();
   registeredPhones.clear();
@@ -51,7 +51,7 @@ test.afterEach(() => {
   processedMessages.clear();
 });
 
-test('a bare name deterministically completes onboarding without calling Gemini', async () => {
+test('a bare name deterministically completes onboarding without calling Groq', async () => {
   onboardingState.add(phone);
   let saved;
   api.saveWhatsAppProfile = async (...args) => { saved = args; return { created: true }; };
@@ -126,8 +126,8 @@ test('Ok during onboarding asks for the name again; an ordinary acknowledgement 
   assert.match(replies[1], /You're welcome/);
 });
 
-test('the requested comma-formatted expense persists before FD confirms it', async () => {
-  gemini.interpretMessage = async () => ({
+test('the requested comma-formatted expense persists before FinTrack confirms it', async () => {
+  groq.interpretMessage = async () => ({
     intent: 'RECORD_EXPENSE', statementStatus: 'COMPLETED', confidence: 'HIGH', transactionType: 'EXPENSE',
     amount: '50000', previousAmount: '', currency: 'UGX', description: 'lunch', category: 'FOOD',
     transactionDate: new Date().toISOString().slice(0, 10), period: 'UNSPECIFIED', startDate: '', endDate: '',
@@ -158,21 +158,20 @@ test('the requested comma-formatted expense persists before FD confirms it', asy
   assert.match(replies[0], /Recorded: UGX 50,000 for lunch/);
 });
 
-test('Gemini failure never writes a deterministic transaction', async () => {
+test('a clear expense command records deterministically without waiting for Groq', async () => {
   registeredPhones.add(phone);
-  gemini.interpretMessage = async () => { throw new Error('offline'); };
+  groq.interpretMessage = async () => { throw new Error('Groq should not be called'); };
   let transactionWrites = 0;
   api.recordTransaction = async () => { transactionWrites += 1; };
   const replies = [];
-  await dispatchMessage(from, 'I spent 50,000 on lunch today', 'expense-gemini-offline', async (_to, text) => replies.push(text));
-  assert.equal(transactionWrites, 0);
-  assert.match(replies[0], /language service|try again shortly/i);
-  assert.match(replies[0], /Nothing was recorded/i);
+  await dispatchMessage(from, 'I spent 50,000 on lunch today', 'expense-groq-offline', async (_to, text) => replies.push(text));
+  assert.equal(transactionWrites, 1);
+  assert.match(replies[0], /Recorded: UGX 50,000 for lunch/);
 });
 
-test('300 meat keeps its known fields in a durable pending clarification when Gemini is down', async () => {
+test('300 meat keeps its known fields in a durable pending clarification when Groq is down', async () => {
   registeredPhones.add(phone);
-  gemini.interpretMessage = async () => { throw new Error('offline'); };
+  groq.interpretMessage = async () => { throw new Error('offline'); };
   let pending;
   api.savePendingAction = async (_phone, action_type, payload, original_message_id) => { pending = { action_type, payload, original_message_id }; };
   const replies = [];
@@ -186,7 +185,7 @@ test('300 meat keeps its known fields in a durable pending clarification when Ge
 
 test('a failed Django write never receives a success confirmation', async () => {
   registeredPhones.add(phone);
-  gemini.interpretMessage = async () => expenseInterpretation(50000, 'lunch');
+  groq.interpretMessage = async () => expenseInterpretation(50000, 'lunch');
   api.recordTransaction = async () => { throw new Error('write rejected'); };
   const replies = [];
   await dispatchMessage(from, 'I spent 50,000 on lunch today', 'expense-failed-1', async (_to, text) => replies.push(text));
@@ -196,7 +195,7 @@ test('a failed Django write never receives a success confirmation', async () => 
 
 test('an outbound failure after persistence is not reported as a Django write failure', async () => {
   registeredPhones.add(phone);
-  gemini.interpretMessage = async () => expenseInterpretation(2000, 'a drink');
+  groq.interpretMessage = async () => expenseInterpretation(2000, 'a drink');
   let persisted = false;
   api.recordTransaction = async () => { persisted = true; return { id: 45 }; };
   const replies = [];
@@ -213,7 +212,7 @@ test('an outbound failure after persistence is not reported as a Django write fa
 
 test('the exact unknown-phone response under Django 403 negotiation selects onboarding', async () => {
   registeredPhones.add(phone);
-  gemini.interpretMessage = async () => expenseInterpretation(2000, 'a drink');
+  groq.interpretMessage = async () => expenseInterpretation(2000, 'a drink');
   api.recordTransaction = async () => {
     const error = new Error('forbidden');
     error.response = { status: 403, data: { detail: 'Unknown WhatsApp phone number.' } };
@@ -244,7 +243,7 @@ test('show my summary takes the deterministic Django command path', async () => 
   await dispatchMessage(from, 'Show my summary', 'summary-show-1', async (_to, text) => replies.push(text));
   assert.equal(summaryCalls, 1);
   assert.match(replies[0], /No matching transactions were recorded/);
-  assert.match(replies[0], /\*FD \| Summary\*/);
+  assert.match(replies[0], /\*FinTrack \| Summary\*/);
   assert.match(replies[0], /October|2026/);
   assert.doesNotMatch(replies[0], /Loans received: UGX 0|Income: UGX 0|Expenses: UGX 0/);
 });
@@ -261,7 +260,7 @@ test('a summary request is handled while an unrelated transaction clarification 
   await dispatchMessage(from, 'show my summary', 'summary-while-pending', async (_to, text) => replies.push(text));
   assert.ok(query);
   assert.equal(cleared, false);
-  assert.match(replies[0], /FD \| Summary/);
+  assert.match(replies[0], /FinTrack \| Summary/);
 });
 
 test('repeat summary requests reuse profile status and skip pending-action reads', async () => {
@@ -277,17 +276,43 @@ test('repeat summary requests reuse profile status and skip pending-action reads
   assert.equal(pendingReads, 0);
 });
 
-test('profile-name questions return the saved name without invoking Gemini', async () => {
+test('profile-name questions return the saved name without invoking Groq', async () => {
   registeredPhones.add(phone);
-  gemini.interpretMessage = async () => { throw new Error('profile questions must bypass Gemini'); };
+  groq.interpretMessage = async () => { throw new Error('profile questions must bypass Groq'); };
   const replies = [];
   await dispatchMessage(from, 'Remind me my name', 'profile-name-1', async (_to, text) => replies.push(text));
   assert.equal(replies[0], 'Your saved name is Kamate.');
 });
 
+test('an earnings-only monthly query bypasses a stale transaction clarification', async () => {
+  registeredPhones.add(phone);
+  let pendingReads = 0;
+  let insightParams;
+  api.getPendingAction = async () => { pendingReads += 1; return { action_type: 'TRANSACTION', payload: { amount: '5000' } }; };
+  api.getFinancialInsights = async (_phone, params) => { insightParams = params; return { transaction_count: 0, currencies: [], comparisons: [], matching_transactions: [], largest_expenses: [] }; };
+  groq.interpretMessage = async () => { throw new Error('income query must bypass Groq'); };
+  const replies = [];
+  await dispatchMessage(from, 'Hello, send me my earning only for this month', 'income-only-month-1', async (_to, text) => replies.push(text));
+  assert.equal(pendingReads, 0);
+  assert.match(insightParams.start_date, /^\d{4}-\d{2}-01$/);
+  assert.match(replies[0], /No earned income was recorded/);
+});
+
+test('menu option wording and human support bypass a stale transaction clarification', async () => {
+  registeredPhones.add(phone);
+  let pendingReads = 0;
+  api.getPendingAction = async () => { pendingReads += 1; return { action_type: 'TRANSACTION', payload: { amount: '5000' } }; };
+  const replies = [];
+  await dispatchMessage(from, 'Option 5 in menu', 'menu-option-five-1', async (_to, text) => replies.push(text));
+  await dispatchMessage(from, 'They are not picking my calls', 'call-support-1', async (_to, text) => replies.push(text));
+  assert.equal(pendingReads, 0);
+  assert.match(replies[0], /human support/i);
+  assert.match(replies[1], /contact Kamate Group Ltd/i);
+});
+
 test('date-prefixed transaction is persisted with its explicit date and amount', async () => {
   registeredPhones.add(phone);
-  gemini.interpretMessage = async () => expenseInterpretation(100, 'bag keeping at the campus library', '2026-10-22');
+  groq.interpretMessage = async () => expenseInterpretation(100, 'bag keeping at the campus library', '2026-10-22');
   let payload;
   api.recordTransaction = async (_phone, value) => { payload = value; return { id: 44 }; };
   const replies = [];
@@ -300,7 +325,7 @@ test('date-prefixed transaction is persisted with its explicit date and amount',
 
 test('a completed refund uses its own transaction type and is persisted before confirmation', async () => {
   registeredPhones.add(phone);
-  gemini.interpretMessage = async () => ({
+  groq.interpretMessage = async () => ({
     intent: 'RECORD_REFUND', statementStatus: 'COMPLETED', confidence: 'HIGH', transactionType: 'REFUND',
     amount: '15000', previousAmount: '', currency: 'UGX', description: 'returned shoes', category: 'SHOPPING',
     transactionDate: '2026-10-22', period: 'UNSPECIFIED', startDate: '', endDate: '', compareStartDate: '', compareEndDate: '', name: '', searchQuery: '',
@@ -317,7 +342,7 @@ test('a completed refund uses its own transaction type and is persisted before c
 
 test('a pending transaction clarification is completed using the saved details', async () => {
   registeredPhones.add(phone);
-  gemini.interpretMessage = async () => ({
+  groq.interpretMessage = async () => ({
     intent: 'CLARIFICATION', statementStatus: 'COMPLETED', confidence: 'HIGH', transactionType: '', amount: '', previousAmount: '',
     currency: '', description: '', category: '', transactionDate: '', period: 'UNSPECIFIED', startDate: '', endDate: '', compareStartDate: '', compareEndDate: '', name: '',
     searchQuery: '', fieldsToChange: [], missingInformation: 'NONE',
@@ -342,7 +367,7 @@ test('a pending transaction clarification is completed using the saved details',
 
 test('a natural-language date lookup returns only the database result and its exact amount', async () => {
   registeredPhones.add(phone);
-  gemini.interpretMessage = async () => ({
+  groq.interpretMessage = async () => ({
     intent: 'TRANSACTION_LOOKUP', statementStatus: 'QUESTION', confidence: 'HIGH', transactionType: '', amount: '', previousAmount: '', currency: '', description: '', category: '',
     transactionDate: '2026-10-15', period: 'CUSTOM', startDate: '2026-10-15', endDate: '2026-10-15', compareStartDate: '', compareEndDate: '', name: '', searchQuery: '', fieldsToChange: [], missingInformation: 'NONE',
   });
@@ -363,10 +388,10 @@ test('menu and privacy are shown only when requested and use honest text actions
   const replies = [];
   await dispatchMessage(from, 'Show my menu', 'menu-request-1', async (_to, text) => replies.push(text));
   await dispatchMessage(from, 'What data do you store?', 'privacy-request-1', async (_to, text) => replies.push(text));
-  assert.match(replies[0], /FD menu/);
+  assert.match(replies[0], /FinTrack menu/);
   assert.match(replies[0], /not clickable buttons/);
   assert.match(replies[1], /does not read bank or mobile money accounts/);
-  assert.match(replies[1], /delete my FD account/);
+  assert.match(replies[1], /delete my FinTrack account/);
   assert.equal(replies.length, 2);
 });
 
@@ -444,7 +469,7 @@ test('end-to-end mocked WhatsApp flow completes onboarding, records, summarizes,
   const base = {
     statementStatus: 'QUESTION', confidence: 'HIGH', transactionType: '', amount: '', previousAmount: '', currency: '', description: '', category: '', transactionDate: '', period: 'CUSTOM', startDate: '', endDate: '', compareStartDate: '', compareEndDate: '', name: '', searchQuery: '', fieldsToChange: [], missingInformation: 'NONE',
   };
-  gemini.interpretMessage = async (text) => {
+  groq.interpretMessage = async (text) => {
     if (text.toLowerCase().startsWith('spent 15k')) return { ...base, intent: 'RECORD_EXPENSE', statementStatus: 'COMPLETED', confidence: 'HIGH', transactionType: 'EXPENSE', amount: '15000', currency: 'UGX', description: 'lunch at Africana Hotel with my friend', category: 'FOOD', transactionDate: '2026-10-15' };
     if (text.startsWith('What did I buy')) return { ...base, intent: 'TRANSACTION_LOOKUP', transactionDate: '2026-10-15', startDate: '2026-10-15', endDate: '2026-10-15' };
     if (text.startsWith('Show category')) return { ...base, intent: 'SPENDING_BREAKDOWN', startDate: '2026-10-01', endDate: '2026-10-31' };
@@ -480,6 +505,6 @@ test('end-to-end mocked WhatsApp flow completes onboarding, records, summarizes,
   assert.match(replies.at(-1), /Reply yes to confirm/);
   await dispatchMessage(from, 'yes', 'e2e-delete-confirm', send);
   assert.equal(records[0].is_voided, true);
-  await dispatchMessage(from, 'Help me use FD', 'e2e-help', send);
+  await dispatchMessage(from, 'Help me use FinTrack', 'e2e-help', send);
   assert.match(replies.at(-1), /show my menu/);
 });

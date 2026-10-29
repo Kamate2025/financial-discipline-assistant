@@ -1,4 +1,4 @@
-﻿export type ActivityType = "INCOME" | "EXPENSE" | "TRANSFER";
+export type ActivityType = "INCOME" | "EXPENSE" | "TRANSFER";
 
 export interface ParsedTransaction {
   type: "TRANSACTION";
@@ -100,7 +100,7 @@ function extractDescription(text: string, amountStr: string, currency: string): 
   const escapedAmount = amountStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   desc = desc.replace(new RegExp(escapedAmount, "g"), " ");
   desc = desc.replace(new RegExp(`\\b${currency}\\b`, "gi"), " ");
-  desc = desc.replace(/\b(i spent|i paid|i bought|spent|paid|bought|received|income|earned|transferred|transfer|from|for|on|today|yesterday)\b/gi, " ");
+  desc = desc.replace(/\b(i spent|i paid|i bought|record|spent|paid|bought|received|income|earned|transferred|transfer|from|for|on|today|yesterday)\b/gi, " ");
   desc = desc.replace(/\s+/g, " ").replace(/^[\s:,-]+|[\s:,-]+$/g, "").trim();
   return desc || "Unnamed transaction";
 }
@@ -112,7 +112,7 @@ function isOnboarding(text: string): boolean {
 
 function isNameUpdate(text: string): boolean {
   const lower = text.trim().toLowerCase();
-  return lower.startsWith("call me ") || lower.startsWith("my name is ");
+  return lower.startsWith("call me ") || lower.startsWith("my name is ") || lower.startsWith("change my name to ");
 }
 
 function isSummary(text: string): boolean {
@@ -135,6 +135,8 @@ function extractName(text: string): string | null {
     name = text.trim().slice("call me ".length).trim();
   } else if (lower.startsWith("my name is ")) {
     name = text.trim().slice("my name is ".length).trim();
+  } else if (lower.startsWith("change my name to ")) {
+    name = text.trim().slice("change my name to ".length).trim();
   }
 
   if (!name || name.length < 1 || name.length > 100) return null;
@@ -143,6 +145,8 @@ function extractName(text: string): string | null {
 
 function determineActivityType(text: string): ActivityType | null {
   const lower = text.toLowerCase();
+
+  if (/^\s*record\s+.+\s+for\s+\S/.test(lower)) return "EXPENSE";
 
   const unsupportedKeywords = [
     "borrow", "lend", "loan", "repay", "refund", "owes", "owing", "back",

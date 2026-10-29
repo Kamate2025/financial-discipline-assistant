@@ -1,7 +1,7 @@
 import axios from "axios";
 import { createBaileysClient, SESSION_DIR, renderQrCode, getReconnectDelay, isRecoverableDisconnect, describeError, rememberOutboundMessageForRetry } from "./client";
 import { dispatchMessage } from "./handlers";
-import { getGeminiConfigStatus, loadServiceConfig } from "./config";
+import { getGroqConfigStatus, loadServiceConfig } from "./config";
 import { acquireSessionProcessLock } from "./instance-lock";
 
 async function checkDjangoHealth(baseURL: string): Promise<{ reachable: boolean; status?: number; message: string }> {
@@ -29,8 +29,8 @@ async function main(): Promise<void> {
   const djangoHealth = await checkDjangoHealth(backendBaseUrl);
   console.log(`[${new Date().toISOString()}] Django backend URL configured.`);
   console.log(`[${new Date().toISOString()}] Service key configured: ${serviceKey ? "yes" : "no"}`);
-  const geminiStatus = getGeminiConfigStatus();
-  console.log(`[${new Date().toISOString()}] Gemini configured: ${geminiStatus.configured ? `yes (${geminiStatus.model})` : "no"}`);
+  const groqStatus = getGroqConfigStatus();
+  console.log(`[${new Date().toISOString()}] Groq configured: ${groqStatus.configured ? `yes (${groqStatus.model})` : "no"}`);
   console.log(`[${new Date().toISOString()}] ${djangoHealth.message}`);
 
   if (!djangoHealth.reachable) {
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
       );
 
       activeSocket = sock;
-      console.log(`[${new Date().toISOString()}] FD WhatsApp service is running.`);
+      console.log(`[${new Date().toISOString()}] FinTrack WhatsApp service is running.`);
       console.log(`[${new Date().toISOString()}] Session directory: ${SESSION_DIR}`);
       console.log(`[${new Date().toISOString()}] Waiting for device pairing or a valid persisted session.`);
     } finally {
