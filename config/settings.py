@@ -114,12 +114,63 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+
+# Database
+# Local development uses SQLite by default.
+# Production must explicitly select PostgreSQL through environment variables.
+
+DB_ENGINE = os.environ.get("DB_ENGINE", "sqlite").strip().lower()
+
+if DB_ENGINE == "sqlite":
+    if not DEBUG:
+        raise ImproperlyConfigured(
+            "Production requires PostgreSQL. Set DB_ENGINE=postgresql."
+        )
+
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
     }
-}
+
+elif DB_ENGINE in {"postgresql", "postgres"}:
+    required_db_settings = {
+        "DB_NAME": os.environ.get("DB_NAME", "").strip(),
+        "DB_USER": os.environ.get("DB_USER", "").strip(),
+        "DB_PASSWORD": os.environ.get("DB_PASSWORD", ""),
+        "DB_HOST": os.environ.get("DB_HOST", "").strip(),
+        "DB_PORT": os.environ.get("DB_PORT", "").strip(),
+    }
+
+    missing_db_settings = [
+        name
+        for name, value in required_db_settings.items()
+        if not value
+    ]
+
+    if missing_db_settings:
+        raise ImproperlyConfigured(
+            "Missing PostgreSQL environment settings: "
+            + ", ".join(missing_db_settings)
+        )
+
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": required_db_settings["DB_NAME"],
+            "USER": required_db_settings["DB_USER"],
+            "PASSWORD": required_db_settings["DB_PASSWORD"],
+            "HOST": required_db_settings["DB_HOST"],
+            "PORT": required_db_settings["DB_PORT"],
+            "CONN_MAX_AGE": 60,
+        }
+    }
+
+else:
+    raise ImproperlyConfigured(
+        "DB_ENGINE must be either 'sqlite' or 'postgresql'."
+    )
 
 
 # Password validation
@@ -156,7 +207,8 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 
 # Email
